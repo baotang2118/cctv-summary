@@ -33,11 +33,11 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
 
-**Status: video I/O and frame overlays work; summarization does not exist yet.** The app
-reads and plays video with OpenCV. `cctv-summary info` prints container metadata;
-`cctv-summary play` shows a file in an OpenCV window, decodes it with no window at full
-speed under `--headless`, and can annotate frames (`--triangle`). No detection, tracking,
-or summarization logic has been written.
+**Status: video I/O, overlays, and frame-dropping summarization work.** The app reads and
+plays video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary
+play` shows a file in a window, decodes headless (`--headless`), and can annotate frames
+(`--triangle`); `cctv-summary summarize` writes a shorter copy that keeps only frames
+that changed. There is no object/person detection or scene understanding.
 
 ## Toolchain
 
@@ -57,6 +57,8 @@ uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
 uv run cctv-summary play FILE --headless   # no window, decode as fast as possible
 uv run cctv-summary play FILE --triangle   # draw a top-right corner marker
+uv run cctv-summary summarize SRC DST      # shorter copy, changed frames only
+uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
 uv run python -m cctv_summary  # module entry point
 ```
 
@@ -71,8 +73,9 @@ src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    frame annotations (draw_triangle, top_right_triangle)
+src/cctv_summary/summarize.py  frame selection: change_score, RollingBackground, stats
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli.py, test_video.py, test_overlay.py)
+tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
@@ -80,6 +83,34 @@ uv.lock                        committed lockfile — regenerate with uv, never 
 This is a **src layout**: the package is only importable via the installed environment,
 so imports are always absolute (`from cctv_summary.cli import main`), never relative to
 the repo root.
+
+## How summarization works
+
+`summarize.py` drops redundant frames so the output is shorter. Per frame it computes a
+**motion-area score** — absdiff on a downscaled grayscale copy, threshold each pixel by
+`tolerance`, then take `moved_pixels / total_pixels` (0.0–1.0).
+
+A frame is dropped only when it scores below `threshold` against **both**:
+
+1. the previous **kept** frame — ordinary stillness, and
+2. the **rolling background** (mean of the last `window` frames) — slow drift, where each
+   step is tiny but the scene has clearly moved. Dropping the background check silently
+   breaks drift detection; `tests/test_summarize.py` has a regression test for exactly
+   this.
+
+The first frame is always kept. **Every** decoded frame feeds the window, including
+dropped ones. Output is written at the source fps, so it is shorter but no longer
+wall-clock accurate, and OpenCV carries no audio.
+
+**`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
+pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
+
+Scores are compared with `<`, so `--threshold 1.0` still keeps a frame that changed by
+exactly 100%.
+
+Sensible thresholds are footage-dependent. On a 1280x720 handheld webcam clip the default
+`0.10` kept only 1.6% of frames; `0.02` kept 16.5%. Static-camera CCTV tolerates far
+higher thresholds than moving-camera footage.
 
 ## Conventions
 
@@ -89,12 +120,17 @@ the repo root.
   tests never need a subprocess — with no subcommand it prints help and returns `1`
   rather than raising. New subcommands belong in `build_parser()`, with the real work in
   separate modules under `src/cctv_summary/`.
-- **Video access goes through `video.py`.** Do not call `cv2` from `cli.py` or new
-  feature modules. Use `probe()`, `iter_frames()`, `open_capture()`; they validate input
-  and always release the `VideoCapture`.
-- **Errors.** `video.py` raises `VideoError` for anything a user can cause (missing file,
-  unreadable container, bad speed, no GUI). `main()` catches it, prints `error: ...` to
-  stderr, and returns `1`. Never let a raw `cv2.error` reach the user.
+- **Video I/O stays in `video.py`.** Do not call `cv2.VideoCapture`/`VideoWriter` from
+  other modules. Use `probe()`, `iter_frames()`, `open_capture()`, `write_frames()`;
+  they validate input and always release the handle. `write_frames` raises rather than
+  leaving the 0-byte file `VideoWriter` produces when a codec is missing.
+- **Selection logic stays pure.** `select_frames()` takes and returns plain frame
+  iterables with no file I/O, so it is testable with synthetic numpy arrays. Keep file
+  handling in `summarize_video()`.
+- **Errors.** `video.py` and `summarize.py` raise `VideoError` for anything a user can
+  cause (missing file, unreadable container, bad speed/threshold/window, no GUI, missing
+  codec). `main()` catches it, prints `error: ...` to stderr, and returns `1`. Never let
+  a raw `cv2.error` reach the user.
 - **Drawing goes in `overlay.py`, never in the playback loop.** `play()` takes an
   `overlay=` callable applied per frame, so annotations compose without touching
   `video.py`. Overlay functions **must not mutate the input frame** — OpenCV reuses
@@ -114,6 +150,9 @@ the repo root.
 - **Dependencies.** Runtime deps go in `[project.dependencies]`, tooling in
   `[dependency-groups] dev`. After editing either, run `uv sync` and commit the updated
   `uv.lock` in the same change.
+- **Media files are gitignored** (`test-data/`, `*.mp4`, `*.avi`, `*.mkv`, `*.mov`).
+  Local footage is large and often personal — never commit it. Tests synthesise their
+  own clips instead.
 - **Artifacts.** `.venv/`, `.pytest_cache/`, `.ruff_cache/`, and `__pycache__/` are
   already gitignored. Never commit them.
 
@@ -154,13 +193,14 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 
 ## Next steps
 
-**Decided:** the app reads and plays video with OpenCV, and can draw annotations on
-frames. Those layers exist in `video.py` and `overlay.py`.
+**Decided:** the app reads and plays video with OpenCV, can draw annotations on frames,
+and summarizes by dropping redundant frames. Those layers exist in `video.py`,
+`overlay.py`, and `summarize.py`.
 
-**Still undecided:** everything about summarization itself — what "summary" means
-(keyframes, motion segments, event clips, text), the detection/ML approach, output
-format, storage, and whether live RTSP streams are in scope. `probe()`/`iter_frames()`
-are the intended entry points to build on.
+**Still undecided:** whether summarization should go beyond frame-dropping — object or
+person detection, event/scene segmentation, keyframe thumbnails, burned-in timestamps,
+text summaries, and whether live RTSP input is in scope. Also unresolved: how to pick a
+threshold automatically instead of asking the user to tune it per camera.
 
 Ask the user for direction before choosing a summarization approach or adding further
 heavy dependencies (model runtimes, cloud SDKs, ffmpeg bindings). Do not infer a roadmap

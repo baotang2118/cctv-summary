@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +93,21 @@ class NullDisplay:
         pass
 
 
+# Container extension -> fourcc code used when encoding output.
+FOURCC_BY_SUFFIX = {
+    ".avi": "MJPG",
+    ".mkv": "mp4v",
+    ".mov": "mp4v",
+    ".mp4": "mp4v",
+}
+
+DEFAULT_FOURCC = "mp4v"
+
+
+def _fourcc_for(path: Path) -> str:
+    return FOURCC_BY_SUFFIX.get(path.suffix.lower(), DEFAULT_FOURCC)
+
+
 @contextmanager
 def open_capture(path: str | Path) -> Iterator[cv2.VideoCapture]:
     """Open ``path`` as a capture, always releasing it on the way out."""
@@ -139,6 +154,54 @@ def frame_delay_ms(fps: float, speed: float = 1.0) -> int:
     """Per-frame wait that approximates ``fps`` scaled by ``speed``."""
     effective_fps = (fps if fps > 0 else FALLBACK_FPS) * speed
     return max(round(1000 / effective_fps), 1)
+
+
+def write_frames(
+    path: str | Path,
+    frames: Iterable[MatLike],
+    *,
+    fps: float,
+    size: tuple[int, int] | None = None,
+) -> int:
+    """Encode ``frames`` to ``path`` and return how many were written.
+
+    ``size`` is ``(width, height)``; when omitted it is taken from the first
+    frame. The codec is chosen from the file extension.
+    """
+    if fps <= 0:
+        raise VideoError(f"Output fps must be greater than zero, got {fps}")
+
+    out_path = Path(path)
+    if out_path.parent and not out_path.parent.exists():
+        raise VideoError(f"Output directory does not exist: {out_path.parent}")
+
+    fourcc = cv2.VideoWriter_fourcc(*_fourcc_for(out_path))
+    writer: cv2.VideoWriter | None = None
+    written = 0
+
+    try:
+        for frame in frames:
+            if writer is None:
+                height, width = frame.shape[:2]
+                frame_size = size if size is not None else (width, height)
+                writer = cv2.VideoWriter(str(out_path), fourcc, fps, frame_size)
+                if not writer.isOpened():
+                    # VideoWriter reports failure here rather than raising, and
+                    # would otherwise leave behind an empty file.
+                    raise VideoError(
+                        f"Could not open a video writer for {out_path}. The codec "
+                        f"for '{out_path.suffix}' may be unavailable."
+                    )
+            writer.write(frame)
+            written += 1
+    finally:
+        if writer is not None:
+            writer.release()
+
+    if written == 0:
+        raise VideoError(f"No frames to write to {out_path}")
+
+    return written
 
 
 def play(

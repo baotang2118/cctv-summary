@@ -9,6 +9,12 @@ from pathlib import Path
 
 from cctv_summary import __version__
 from cctv_summary.overlay import draw_triangle
+from cctv_summary.summarize import (
+    DEFAULT_THRESHOLD,
+    DEFAULT_TOLERANCE,
+    DEFAULT_WINDOW,
+    summarize_video,
+)
 from cctv_summary.video import VideoError, play, probe
 
 
@@ -32,6 +38,34 @@ def _handle_play(args: argparse.Namespace) -> int:
     )
     verb = "Processed" if args.headless else "Displayed"
     print(f"{verb} {shown} frame(s) from {args.video}")
+    return 0
+
+
+def _handle_summarize(args: argparse.Namespace) -> int:
+    if args.destination is None and not args.dry_run:
+        print(
+            "error: an output path is required unless --dry-run is given",
+            file=sys.stderr,
+        )
+        return 1
+
+    destination = None if args.dry_run else args.destination
+    stats = summarize_video(
+        args.source,
+        destination,
+        threshold=args.threshold,
+        window=args.window,
+        tolerance=args.tolerance,
+    )
+
+    print(f"frames in:   {stats.total}")
+    print(f"frames kept: {stats.kept} ({stats.kept_ratio:.1%})")
+    print(f"dropped:     {stats.dropped}")
+    print(f"duration:    {stats.source_seconds:.2f}s -> {stats.summary_seconds:.2f}s")
+    if destination is None:
+        print("dry run: no file written")
+    else:
+        print(f"wrote:       {destination}")
     return 0
 
 
@@ -78,6 +112,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Draw a triangle marker in the top-right corner of every frame.",
     )
     play_parser.set_defaults(handler=_handle_play)
+
+    summarize_parser = subparsers.add_parser(
+        "summarize",
+        help="Write a shorter copy of a video, keeping only frames that changed.",
+    )
+    summarize_parser.add_argument("source", type=Path, help="Video file to summarize.")
+    summarize_parser.add_argument(
+        "destination",
+        type=Path,
+        nargs="?",
+        help="Where to write the summary (omit only with --dry-run).",
+    )
+    summarize_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help="Fraction of pixels that must move to keep a frame, 0-1 "
+        "(default: %(default)s).",
+    )
+    summarize_parser.add_argument(
+        "--window",
+        type=int,
+        default=DEFAULT_WINDOW,
+        help="Frames in the rolling background window (default: %(default)s).",
+    )
+    summarize_parser.add_argument(
+        "--tolerance",
+        type=int,
+        default=DEFAULT_TOLERANCE,
+        help="Per-pixel intensity change that counts as movement, 0-255 "
+        "(default: %(default)s).",
+    )
+    summarize_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be kept without writing a file.",
+    )
+    summarize_parser.set_defaults(handler=_handle_summarize)
 
     return parser
 
