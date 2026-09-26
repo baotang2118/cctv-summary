@@ -4,6 +4,31 @@ Working notes for AI agents (and humans) picking up this repository. Keep this f
 short, factual, and current: it is shared memory, not documentation. Update it when a
 convention, command, or the project status actually changes.
 
+## Rules
+
+Non-negotiable. Apply these to **every** code change, however small.
+
+1. **Lint and format with the tool, never by hand.** Formatting and import order are
+   owned by `ruff`. Do not hand-align, hand-sort imports, or argue with its output —
+   run the tool and accept the result.
+2. **Lint and format immediately after generating or editing code.** Before reporting
+   work as finished, run, in this order, and get a clean result from each:
+
+   ```bash
+   uv run ruff format .   # format first
+   uv run ruff check .    # then lint (use --fix for autofixable findings)
+   uv run pytest          # then confirm nothing broke
+   ```
+
+   A change is not done while any of these fails. Fix the cause; do not silence rules
+   with `# noqa` or loosen `pyproject.toml` to make an error disappear.
+3. **Evaluate and update this memory after generating code.** When a change lands, ask
+   whether it invalidated anything written here — status, commands, layout, conventions,
+   dependencies, testing patterns, roadmap — and edit `AGENTS.md` in the *same* change.
+   Record new pitfalls in Troubleshooting. Deciding no update is needed is a valid
+   outcome, but the check itself is mandatory. Keep edits terse and delete anything that
+   has gone stale.
+
 ## Project
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
@@ -56,9 +81,9 @@ the repo root.
   `build_parser()`, with the real work in separate modules under `src/cctv_summary/`.
 - **Typing.** Every module starts with `from __future__ import annotations` and uses
   modern typing (`X | None`, `collections.abc`); ruff's `UP` rules enforce this.
-- **Lint/format.** Ruff is configured in `pyproject.toml`: line length 88, rules
-  `E, F, I, UP, B, SIM`. Import sorting (`I`) is enforced, so run `uv run ruff format .`
-  and `uv run ruff check .` before committing.
+- **Lint/format config.** Ruff is configured in `pyproject.toml`: line length 88, rules
+  `E, F, I, UP, B, SIM`, import sorting (`I`) enforced. Running it is covered by Rules 1
+  and 2 above.
 - **Version.** `__version__` in `src/cctv_summary/__init__.py` and `version` in
   `pyproject.toml` are maintained by hand and must be bumped together.
 - **Dependencies.** Runtime deps go in `[project.dependencies]`, tooling in
