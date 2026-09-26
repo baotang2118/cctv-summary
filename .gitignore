@@ -30,3 +30,10 @@ Thumbs.db
 
 # Environment
 .env
+
+# Local sample footage and generated summaries — large, not source
+test-data/
+*.mp4
+*.avi
+*.mkv
+*.mov
