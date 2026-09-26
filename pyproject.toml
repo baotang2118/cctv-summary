@@ -1,6 +1,6 @@
 [project]
 name = "cctv-summary"
-version = "0.1.0"
+version = "0.2.0"
 description = "Summarization tooling for CCTV footage."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = []
+dependencies = ["opencv-python>=4.10"]
 
 [project.scripts]
 cctv-summary = "cctv_summary.cli:main"

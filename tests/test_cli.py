@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import pytest
 
 from cctv_summary import __version__
 from cctv_summary.cli import main
+from cctv_summary.video import VideoError
 
 
 def test_version_is_exposed():
@@ -9,18 +12,73 @@ def test_version_is_exposed():
     assert __version__
 
 
-def test_main_returns_zero(capsys):
-    assert main([]) == 0
-    assert "Hello, world!" in capsys.readouterr().out
-
-
-def test_main_accepts_name(capsys):
-    assert main(["--name", "tangd"]) == 0
-    assert "Hello, tangd!" in capsys.readouterr().out
-
-
 def test_version_flag_exits_cleanly(capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
+
     assert excinfo.value.code == 0
     assert __version__ in capsys.readouterr().out
+
+
+def test_no_command_prints_help(capsys):
+    assert main([]) == 1
+
+    out = capsys.readouterr().out
+    assert "info" in out
+    assert "play" in out
+
+
+def test_info_prints_metadata(sample_video):
+    assert main(["info", str(sample_video.path)]) == 0
+
+
+def test_info_output_contains_resolution_and_duration(sample_video, capsys):
+    main(["info", str(sample_video.path)])
+
+    out = capsys.readouterr().out
+    assert f"{sample_video.width}x{sample_video.height}" in out
+    assert f"frames:      {sample_video.frames}" in out
+    assert "duration:" in out
+
+
+def test_info_reports_missing_file(tmp_path, capsys):
+    assert main(["info", str(tmp_path / "nope.avi")]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_play_invokes_playback(monkeypatch, capsys, tmp_path):
+    calls = {}
+
+    def fake_play(video, *, speed):
+        calls["video"] = video
+        calls["speed"] = speed
+        return 7
+
+    monkeypatch.setattr("cctv_summary.cli.play", fake_play)
+
+    assert main(["play", str(tmp_path / "clip.avi"), "--speed", "2.5"]) == 0
+    assert calls["speed"] == 2.5
+    assert "Displayed 7 frame(s)" in capsys.readouterr().out
+
+
+def test_play_defaults_to_normal_speed(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_play(video, *, speed):
+        captured["speed"] = speed
+        return 0
+
+    monkeypatch.setattr("cctv_summary.cli.play", fake_play)
+
+    assert main(["play", str(tmp_path / "clip.avi")]) == 0
+    assert captured["speed"] == 1.0
+
+
+def test_play_surfaces_video_errors(monkeypatch, capsys, tmp_path):
+    def fake_play(video, *, speed):
+        raise VideoError("boom")
+
+    monkeypatch.setattr("cctv_summary.cli.play", fake_play)
+
+    assert main(["play", str(tmp_path / "clip.avi")]) == 1
+    assert "error: boom" in capsys.readouterr().err
