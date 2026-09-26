@@ -33,10 +33,11 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
 
-**Status: video I/O works; summarization does not exist yet.** The app reads and plays
-video with OpenCV (`opencv-python`, the only runtime dependency). `cctv-summary info`
-prints container metadata and `cctv-summary play` shows a file in an OpenCV window. No
-detection, tracking, or summarization logic has been written.
+**Status: video I/O and frame overlays work; summarization does not exist yet.** The app
+reads and plays video with OpenCV. `cctv-summary info` prints container metadata;
+`cctv-summary play` shows a file in an OpenCV window, decodes it with no window at full
+speed under `--headless`, and can annotate frames (`--triangle`). No detection, tracking,
+or summarization logic has been written.
 
 ## Toolchain
 
@@ -54,6 +55,8 @@ uv run ruff format .           # format
 uv run cctv-summary --help     # console script entry point
 uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
+uv run cctv-summary play FILE --headless   # no window, decode as fast as possible
+uv run cctv-summary play FILE --triangle   # draw a top-right corner marker
 uv run python -m cctv_summary  # module entry point
 ```
 
@@ -67,8 +70,9 @@ src/cctv_summary/__init__.py   package docstring + __version__
 src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
+src/cctv_summary/overlay.py    frame annotations (draw_triangle, top_right_triangle)
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli.py, test_video.py)
+tests/                         pytest suite (test_cli.py, test_video.py, test_overlay.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
@@ -91,9 +95,15 @@ the repo root.
 - **Errors.** `video.py` raises `VideoError` for anything a user can cause (missing file,
   unreadable container, bad speed, no GUI). `main()` catches it, prints `error: ...` to
   stderr, and returns `1`. Never let a raw `cv2.error` reach the user.
+- **Drawing goes in `overlay.py`, never in the playback loop.** `play()` takes an
+  `overlay=` callable applied per frame, so annotations compose without touching
+  `video.py`. Overlay functions **must not mutate the input frame** — OpenCV reuses
+  decode buffers, so draw on `frame.copy()` and return it.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol
-  (`show`/`wait`/`close`), with `WindowDisplay` as the real `cv2.imshow` implementation.
-  Anything needing a window must accept an injectable display so it stays testable.
+  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
+  (headless, never waits) as the implementations. Anything needing a window must accept
+  an injectable display so it stays testable. `play(..., display=...)` overrides
+  `headless=`.
 - **Typing.** Every module starts with `from __future__ import annotations` and uses
   modern typing (`X | None`, `collections.abc`); ruff's `UP` rules enforce this.
 - **Lint/format config.** Ruff is configured in `pyproject.toml`: line length 88, rules
@@ -132,15 +142,20 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
   writes a tiny MJPG clip to a temp dir and carries its own `path`, `width`, `height`,
   `fps`, and `frames`, so assertions never hardcode those numbers. **No media files are
   committed** — keep it that way.
-- **Tests must never open a window.** Pass a fake `Display` to `play()`, or monkeypatch
-  `cctv_summary.cli.play`. `tests/test_video.py::FakeDisplay` is the reference fake and
-  can simulate a quit key.
+- **Tests must never open a window.** Use `headless=True`, pass a fake `Display` to
+  `play()`, or monkeypatch `cctv_summary.cli.play`. `tests/test_video.py::FakeDisplay`
+  is the reference fake and can simulate a quit key.
 - `tests/` is not an importable package: there is no `__init__.py`, so tests cannot
   `import tests.conftest`. Share state through fixtures instead.
+- Fakes that stand in for `play()` take `(video, **kwargs)` and assert on keyword names,
+  so adding a new `play()` option does not break every CLI test.
+- Assert on pixels for overlays (region non-empty, other regions untouched, source frame
+  unmodified) rather than eyeballing output.
 
 ## Next steps
 
-**Decided:** the app reads and plays video with OpenCV. That layer exists in `video.py`.
+**Decided:** the app reads and plays video with OpenCV, and can draw annotations on
+frames. Those layers exist in `video.py` and `overlay.py`.
 
 **Still undecided:** everything about summarization itself — what "summary" means
 (keyframes, motion segments, event clips, text), the detection/ML approach, output

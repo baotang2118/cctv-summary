@@ -11,7 +11,7 @@ tested with `pytest`, and linted/formatted with `ruff`.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 Playback opens a window via OpenCV's highgui, so `cctv-summary play` needs a desktop
-session. `cctv-summary info` works headless.
+session. `cctv-summary info` and `cctv-summary play --headless` work headless.
 
 ## Setup
 
@@ -46,6 +46,22 @@ uv run cctv-summary play path/to/clip.mp4 --speed 4
 
 `--speed` is a multiplier on the file's own frame rate, so `4` plays four times faster.
 
+Read a clip with no window at all — useful over SSH, in CI, or for timing a decode pass:
+
+```bash
+uv run cctv-summary play path/to/clip.mp4 --headless
+```
+
+Headless runs decode as fast as the file allows and ignore `--speed`.
+
+Draw a marker on every frame:
+
+```bash
+uv run cctv-summary play path/to/clip.mp4 --triangle
+```
+
+`--triangle` overlays a red triangle in the top-right corner, scaled to the frame size.
+
 ```bash
 uv run cctv-summary --help
 uv run python -m cctv_summary
@@ -67,7 +83,7 @@ uv run ruff format .
 ## Layout
 
 ```
-src/cctv_summary/   package source (cli.py, video.py)
+src/cctv_summary/   package source (cli.py, video.py, overlay.py)
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
 AGENTS.md           working notes for agents and contributors
@@ -75,9 +91,10 @@ AGENTS.md           working notes for agents and contributors
 
 ## Status
 
-Reading and playing video with OpenCV works. Summarization itself is not implemented
-yet — no detection, tracking, or event extraction. `video.probe()` and
-`video.iter_frames()` are the intended building blocks for it.
+Reading, playing, and annotating video with OpenCV works. Summarization itself is not
+implemented yet — no detection, tracking, or event extraction. `video.probe()`,
+`video.iter_frames()`, and the `play(overlay=...)` hook are the intended building blocks
+for it.
 
 ## Agent notes
 

@@ -11,6 +11,8 @@ name = "cctv-summary"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "opencv-python" },
 ]
 
@@ -21,7 +23,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "opencv-python", specifier = ">=4.10" }]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "opencv-python", specifier = ">=4.10" },
+]
 
 [package.metadata.requires-dev]
 dev = [

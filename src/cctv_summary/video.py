@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +17,9 @@ DEFAULT_WINDOW_NAME = "cctv-summary"
 FALLBACK_FPS = 25.0
 
 QUIT_KEYS = frozenset({ord("q"), ord("Q"), 27})
+
+# What `cv2.waitKey(...) & 0xFF` yields when no key was pressed.
+NO_KEY = 255
 
 
 class VideoError(RuntimeError):
@@ -74,6 +77,22 @@ class WindowDisplay:
             cv2.destroyWindow(self.window_name)
 
 
+class NullDisplay:
+    """Consumes frames without any GUI, for headless runs.
+
+    Never waits, so decoding proceeds as fast as the container allows.
+    """
+
+    def show(self, frame: MatLike) -> None:
+        pass
+
+    def wait(self, delay_ms: int) -> int:
+        return NO_KEY
+
+    def close(self) -> None:
+        pass
+
+
 @contextmanager
 def open_capture(path: str | Path) -> Iterator[cv2.VideoCapture]:
     """Open ``path`` as a capture, always releasing it on the way out."""
@@ -126,23 +145,34 @@ def play(
     path: str | Path,
     *,
     speed: float = 1.0,
+    headless: bool = False,
     display: Display | None = None,
+    overlay: Callable[[MatLike], MatLike] | None = None,
 ) -> int:
     """Play ``path`` frame by frame and return how many frames were shown.
 
-    Playback stops early when the viewer presses ``q`` or Escape.
+    ``overlay``, when given, is applied to each frame before it is displayed.
+    With ``headless=True`` frames are decoded without a window and as fast as
+    possible, so ``speed`` has no effect. Playback stops early when the viewer
+    presses ``q`` or Escape. An explicit ``display`` overrides ``headless``.
     """
     if speed <= 0:
         raise VideoError(f"Playback speed must be greater than zero, got {speed}")
 
     info = probe(path)
     delay_ms = frame_delay_ms(info.fps, speed)
-    surface = WindowDisplay() if display is None else display
+
+    if display is not None:
+        surface: Display = display
+    elif headless:
+        surface = NullDisplay()
+    else:
+        surface = WindowDisplay()
 
     shown = 0
     try:
         for frame in iter_frames(path):
-            surface.show(frame)
+            surface.show(frame if overlay is None else overlay(frame))
             shown += 1
             if surface.wait(delay_ms) in QUIT_KEYS:
                 break

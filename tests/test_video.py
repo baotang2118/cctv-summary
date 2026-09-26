@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import cv2
 import pytest
 
 from cctv_summary.video import (
+    NO_KEY,
     QUIT_KEYS,
+    NullDisplay,
     VideoError,
     VideoInfo,
     frame_delay_ms,
@@ -129,3 +132,73 @@ def test_frame_delay_never_returns_zero():
 def test_escape_and_q_are_quit_keys():
     assert ord("q") in QUIT_KEYS
     assert 27 in QUIT_KEYS
+
+
+def test_headless_play_reads_every_frame(sample_video):
+    assert play(sample_video.path, headless=True) == sample_video.frames
+
+
+def test_headless_play_never_opens_a_window(sample_video, monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("headless playback must not touch the GUI")
+
+    monkeypatch.setattr(cv2, "imshow", explode)
+    monkeypatch.setattr(cv2, "waitKey", explode)
+    monkeypatch.setattr(cv2, "destroyWindow", explode)
+
+    assert play(sample_video.path, headless=True) == sample_video.frames
+
+
+def test_explicit_display_overrides_headless(sample_video):
+    display = FakeDisplay()
+
+    play(sample_video.path, headless=True, display=display)
+
+    assert display.frames == sample_video.frames
+    assert display.closed
+
+
+def test_overlay_is_applied_to_every_frame(sample_video):
+    display = FakeDisplay()
+    seen = []
+
+    def mark(frame):
+        seen.append(frame)
+        return frame
+
+    play(sample_video.path, display=display, overlay=mark)
+
+    assert len(seen) == sample_video.frames
+
+
+def test_overlay_result_is_what_gets_displayed(sample_video):
+    class Recorder(FakeDisplay):
+        def __init__(self):
+            super().__init__()
+            self.shown = []
+
+        def show(self, frame):
+            super().show(frame)
+            self.shown.append(frame)
+
+    display = Recorder()
+    replacement = object()
+
+    play(sample_video.path, display=display, overlay=lambda frame: replacement)
+
+    assert display.shown
+    assert all(frame is replacement for frame in display.shown)
+
+
+def test_null_display_never_reports_a_quit_key():
+    display = NullDisplay()
+
+    assert display.wait(40) == NO_KEY
+    assert NO_KEY not in QUIT_KEYS
+
+
+def test_null_display_ignores_frames_and_closes_cleanly(sample_video):
+    display = NullDisplay()
+
+    display.show(next(iter_frames(sample_video.path)))
+    display.close()

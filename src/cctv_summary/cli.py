@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cctv_summary import __version__
+from cctv_summary.overlay import draw_triangle
 from cctv_summary.video import VideoError, play, probe
 
 
@@ -22,8 +23,15 @@ def _handle_info(args: argparse.Namespace) -> int:
 
 
 def _handle_play(args: argparse.Namespace) -> int:
-    shown = play(args.video, speed=args.speed)
-    print(f"Displayed {shown} frame(s) from {args.video}")
+    overlay = draw_triangle if args.triangle else None
+    shown = play(
+        args.video,
+        speed=args.speed,
+        headless=args.headless,
+        overlay=overlay,
+    )
+    verb = "Processed" if args.headless else "Displayed"
+    print(f"{verb} {shown} frame(s) from {args.video}")
     return 0
 
 
@@ -57,6 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Playback speed multiplier; 2.0 is twice as fast (default: %(default)s).",
+    )
+    play_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Read frames in the background without opening a window, as fast as "
+        "possible. --speed is ignored in this mode.",
+    )
+    play_parser.add_argument(
+        "--triangle",
+        action="store_true",
+        help="Draw a triangle marker in the top-right corner of every frame.",
     )
     play_parser.set_defaults(handler=_handle_play)
 
