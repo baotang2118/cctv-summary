@@ -91,13 +91,55 @@ burned into the pixels — there is no way to strip it from an existing summary,
 the original if you need unmarked footage. Playing a summary with `--speed` above 1
 stacks the fast-forward badge beneath the scissors rather than on top of it.
 
-### How it decides
+### How it works
 
-Each frame is scored by how much of it moved, measured against a rolling average of
-recent frames. An event opens when that score crosses `--threshold` and closes only after
-motion has stayed low for about a second, so someone pausing mid-shot does not get split
-into several events. Surviving events are padded by `--pad` seconds at each end and
-merged where they overlap.
+Summarizing CCTV is mostly a problem of *not* losing the few seconds that matter. The
+technique has three stages, and the guiding principle is **eager to start, reluctant to
+stop**.
+
+**1. Score each frame against the recent background, not the frame before it.**
+
+This is the part that makes everything else work. Comparing consecutive frames measures
+how *fast* something is moving, so a person walking slowly barely differs from the frame
+before and disappears. Instead each frame is compared against a rolling average of the
+last `--window` frames — effectively "what this scene looks like when nothing is
+happening". A person is then different from an empty corridor for as long as they are in
+shot, however slowly they move.
+
+The score is simply the fraction of pixels that changed, from `0.0` to `1.0`.
+
+**2. Group the score into events, using two thresholds rather than one.**
+
+An event *opens* when the score reaches `--threshold`, but only *closes* once the score
+has dropped to half that **and stayed there for about a second**. A single threshold
+would flicker on and off, chopping one person into several events every time they slowed
+down or paused.
+
+**3. Pad each event, then merge any that now overlap.**
+
+`--pad` seconds are added to both ends, so people are seen walking in rather than
+appearing mid-stride. Two events close together become one continuous clip instead of two
+with a jarring cut between them.
+
+Here is one person walking through, pausing halfway, alongside a 2-frame flicker of
+camera noise — and what each stage keeps (`#` = motion detected, `K` = frame kept):
+
+```
+raw >= threshold  ..............#####...####............##............
+                                      ^pause            ^noise
+1. threshold only ..............KKKKKK..KKKKK...........KK............  3 events
+2. + cooldown     ..............KKKKKKKKKKKKK...........KK............  2 events
+3. + --min-event  ..............KKKKKKKKKKKKK.........................  1 event
+4. + --pad        KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.....  1 event
+```
+
+Row 1 is what a naive threshold gives you: the walker is torn into three fragments and
+the noise is kept. Each stage then fixes one failure — the cooldown bridges the pause,
+`--min-event` discards the flicker, and `--pad` restores the lead-in and lead-out.
+
+Note that `--min-event` is applied *before* `--pad`. That ordering matters: padding a
+2-frame noise blip by 2 seconds either side would otherwise manufacture a 4-second
+"event" out of nothing.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -106,6 +148,10 @@ merged where they overlap.
 | `--min-event` | `1.0` | Ignore anything shorter than this, in seconds |
 | `--window` | `30` | Frames in the rolling background average |
 | `--tolerance` | `25` | Per-pixel intensity change counting as movement (0–255) |
+
+`--threshold` and `--tolerance` are easy to confuse. `--tolerance` decides whether a
+single *pixel* changed enough to count as movement; `--threshold` decides whether *enough
+pixels* moved for the frame to count as motion.
 
 ### Tuning
 
@@ -122,6 +168,11 @@ silently discard every event — at `0.05` that same clip returned a single fram
 - **Events cut short, or one person split in two?** Raise `--pad`.
 - **Grainy night footage triggering constantly?** Raise `--tolerance` to `40`+ so sensor
   noise stops counting as movement.
+- **Someone stands still for a long time?** They gradually blend into the rolling
+  background and the event closes. With the default `--window 30` (3 seconds of memory at
+  10fps) a motionless figure stops registering after about 2.4 seconds; at `--window 120`
+  they kept registering indefinitely in the same test. Raise `--window` so the background
+  takes longer to absorb them.
 
 Motion here is raw pixel change, with no idea what a person is — rain, headlights and a
 swaying branch all count. Expect to tune per camera rather than globally.
