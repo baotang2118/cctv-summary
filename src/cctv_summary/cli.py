@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cctv_summary import __version__
-from cctv_summary.overlay import draw_triangle
 from cctv_summary.summarize import (
     DEFAULT_THRESHOLD,
     DEFAULT_TOLERANCE,
@@ -29,13 +28,7 @@ def _handle_info(args: argparse.Namespace) -> int:
 
 
 def _handle_play(args: argparse.Namespace) -> int:
-    overlay = draw_triangle if args.triangle else None
-    shown = play(
-        args.video,
-        speed=args.speed,
-        headless=args.headless,
-        overlay=overlay,
-    )
+    shown = play(args.video, speed=args.speed, headless=args.headless)
     verb = "Processed" if args.headless else "Displayed"
     print(f"{verb} {shown} frame(s) from {args.video}")
     return 0
@@ -105,11 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read frames in the background without opening a window, as fast as "
         "possible. --speed is ignored in this mode.",
-    )
-    play_parser.add_argument(
-        "--triangle",
-        action="store_true",
-        help="Draw a triangle marker in the top-right corner of every frame.",
     )
     play_parser.set_defaults(handler=_handle_play)
 

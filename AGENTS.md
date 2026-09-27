@@ -33,11 +33,11 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
 
-**Status: video I/O, overlays, and frame-dropping summarization work.** The app reads and
-plays video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary
-play` shows a file in a window, decodes headless (`--headless`), and can annotate frames
-(`--triangle`); `cctv-summary summarize` writes a shorter copy that keeps only frames
-that changed. There is no object/person detection or scene understanding.
+**Status: video I/O and frame-dropping summarization work.** The app reads and plays
+video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play`
+shows a file in a window or decodes headless (`--headless`); `cctv-summary summarize`
+writes a shorter copy that keeps only frames that changed. There is no object/person
+detection or scene understanding.
 
 ## Toolchain
 
@@ -56,7 +56,6 @@ uv run cctv-summary --help     # console script entry point
 uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
 uv run cctv-summary play FILE --headless   # no window, decode as fast as possible
-uv run cctv-summary play FILE --triangle   # draw a top-right corner marker
 uv run cctv-summary summarize SRC DST      # shorter copy, changed frames only
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
 uv run python -m cctv_summary  # module entry point
@@ -72,10 +71,9 @@ src/cctv_summary/__init__.py   package docstring + __version__
 src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
-src/cctv_summary/overlay.py    frame annotations (draw_triangle, top_right_triangle)
 src/cctv_summary/summarize.py  frame selection: change_score, RollingBackground, stats
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
+tests/                         pytest suite (test_cli.py, test_video.py, test_summarize.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
@@ -131,10 +129,6 @@ higher thresholds than moving-camera footage.
   cause (missing file, unreadable container, bad speed/threshold/window, no GUI, missing
   codec). `main()` catches it, prints `error: ...` to stderr, and returns `1`. Never let
   a raw `cv2.error` reach the user.
-- **Drawing goes in `overlay.py`, never in the playback loop.** `play()` takes an
-  `overlay=` callable applied per frame, so annotations compose without touching
-  `video.py`. Overlay functions **must not mutate the input frame** — OpenCV reuses
-  decode buffers, so draw on `frame.copy()` and return it.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol
   (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept
@@ -188,14 +182,15 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
   `import tests.conftest`. Share state through fixtures instead.
 - Fakes that stand in for `play()` take `(video, **kwargs)` and assert on keyword names,
   so adding a new `play()` option does not break every CLI test.
-- Assert on pixels for overlays (region non-empty, other regions untouched, source frame
-  unmodified) rather than eyeballing output.
 
 ## Next steps
 
-**Decided:** the app reads and plays video with OpenCV, can draw annotations on frames,
-and summarizes by dropping redundant frames. Those layers exist in `video.py`,
-`overlay.py`, and `summarize.py`.
+**Decided:** the app reads and plays video with OpenCV, and summarizes by dropping
+redundant frames. Those layers exist in `video.py` and `summarize.py`.
+
+A `--triangle` frame-annotation experiment was built and then removed once it had proved
+drawing works; there is deliberately no overlay layer now. Add one back only when a real
+feature needs it.
 
 **Still undecided:** whether summarization should go beyond frame-dropping — object or
 person detection, event/scene segmentation, keyframe thumbnails, burned-in timestamps,

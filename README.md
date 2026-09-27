@@ -54,14 +54,6 @@ uv run cctv-summary play path/to/clip.mp4 --headless
 
 Headless runs decode as fast as the file allows and ignore `--speed`.
 
-Draw a marker on every frame:
-
-```bash
-uv run cctv-summary play path/to/clip.mp4 --triangle
-```
-
-`--triangle` overlays a red triangle in the top-right corner, scaled to the frame size.
-
 ## Summarize
 
 Write a shorter copy that keeps only frames where something changed:
@@ -123,7 +115,7 @@ uv run ruff format .
 ## Layout
 
 ```
-src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py)
+src/cctv_summary/   package source (cli.py, video.py, summarize.py)
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
 AGENTS.md           working notes for agents and contributors
@@ -131,8 +123,8 @@ AGENTS.md           working notes for agents and contributors
 
 ## Status
 
-Reading, playing, annotating, and frame-drop summarization work. There is no object or
-person detection, scene segmentation, or text summary yet.
+Reading, playing, and frame-drop summarization work. There is no object or person
+detection, scene segmentation, or text summary yet.
 
 ## Agent notes
 

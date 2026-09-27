@@ -158,38 +158,6 @@ def test_explicit_display_overrides_headless(sample_video):
     assert display.closed
 
 
-def test_overlay_is_applied_to_every_frame(sample_video):
-    display = FakeDisplay()
-    seen = []
-
-    def mark(frame):
-        seen.append(frame)
-        return frame
-
-    play(sample_video.path, display=display, overlay=mark)
-
-    assert len(seen) == sample_video.frames
-
-
-def test_overlay_result_is_what_gets_displayed(sample_video):
-    class Recorder(FakeDisplay):
-        def __init__(self):
-            super().__init__()
-            self.shown = []
-
-        def show(self, frame):
-            super().show(frame)
-            self.shown.append(frame)
-
-    display = Recorder()
-    replacement = object()
-
-    play(sample_video.path, display=display, overlay=lambda frame: replacement)
-
-    assert display.shown
-    assert all(frame is replacement for frame in display.shown)
-
-
 def test_null_display_never_reports_a_quit_key():
     display = NullDisplay()
 

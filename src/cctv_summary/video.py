@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,11 +210,9 @@ def play(
     speed: float = 1.0,
     headless: bool = False,
     display: Display | None = None,
-    overlay: Callable[[MatLike], MatLike] | None = None,
 ) -> int:
     """Play ``path`` frame by frame and return how many frames were shown.
 
-    ``overlay``, when given, is applied to each frame before it is displayed.
     With ``headless=True`` frames are decoded without a window and as fast as
     possible, so ``speed`` has no effect. Playback stops early when the viewer
     presses ``q`` or Escape. An explicit ``display`` overrides ``headless``.
@@ -235,7 +233,7 @@ def play(
     shown = 0
     try:
         for frame in iter_frames(path):
-            surface.show(frame if overlay is None else overlay(frame))
+            surface.show(frame)
             shown += 1
             if surface.wait(delay_ms) in QUIT_KEYS:
                 break
