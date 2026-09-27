@@ -1,6 +1,6 @@
 [project]
 name = "cctv-summary"
-version = "0.4.0"
+version = "0.5.0"
 description = "Summarization tooling for CCTV footage."
 readme = "README.md"
 requires-python = ">=3.11"

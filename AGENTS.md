@@ -35,9 +35,9 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 **Status: video I/O and frame-dropping summarization work.** The app reads and plays
 video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play`
-shows a file in a window or decodes headless (`--headless`); `cctv-summary summarize`
-writes a shorter copy that keeps only frames that changed. There is no object/person
-detection or scene understanding.
+shows a file in a window (badging the corner when `--speed` is above 1) or decodes
+headless (`--headless`); `cctv-summary summarize` writes a shorter copy that keeps only
+frames that changed. There is no object/person detection or scene understanding.
 
 ## Toolchain
 
@@ -55,6 +55,7 @@ uv run ruff format .           # format
 uv run cctv-summary --help     # console script entry point
 uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
+uv run cctv-summary play FILE --speed 4    # faster, badges the top-right corner
 uv run cctv-summary play FILE --headless   # no window, decode as fast as possible
 uv run cctv-summary summarize SRC DST      # shorter copy, changed frames only
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
@@ -71,9 +72,10 @@ src/cctv_summary/__init__.py   package docstring + __version__
 src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
+src/cctv_summary/overlay.py    frame annotations (draw_fast_forward speed badge)
 src/cctv_summary/summarize.py  frame selection: change_score, RollingBackground, stats
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli.py, test_video.py, test_summarize.py)
+tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
@@ -129,6 +131,14 @@ higher thresholds than moving-camera footage.
   cause (missing file, unreadable container, bad speed/threshold/window, no GUI, missing
   codec). `main()` catches it, prints `error: ...` to stderr, and returns `1`. Never let
   a raw `cv2.error` reach the user.
+- **Drawing lives in `overlay.py`.** Annotation functions take a frame, return a new one,
+  and **must not mutate the input** — OpenCV reuses decode buffers, so draw on
+  `frame.copy()`. Sizes derive from the frame dimensions so markers scale with
+  resolution instead of vanishing on 1080p.
+- **Overlays need a backing plate, not an outline.** White marks with a thin dark outline
+  are unreadable on bright footage; `draw_fast_forward` darkens a rectangle behind the
+  badge first. Test legibility by asserting on contrast (`corner.min()` / `corner.max()`)
+  against white *and* black frames, not just "some pixels changed".
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol
   (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept
@@ -182,15 +192,14 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
   `import tests.conftest`. Share state through fixtures instead.
 - Fakes that stand in for `play()` take `(video, **kwargs)` and assert on keyword names,
   so adding a new `play()` option does not break every CLI test.
+- `FakeDisplay` records every frame in `.shown`, so tests can assert on what playback
+  actually handed the display (badged vs untouched), not just how many frames it saw.
 
 ## Next steps
 
 **Decided:** the app reads and plays video with OpenCV, and summarizes by dropping
-redundant frames. Those layers exist in `video.py` and `summarize.py`.
-
-A `--triangle` frame-annotation experiment was built and then removed once it had proved
-drawing works; there is deliberately no overlay layer now. Add one back only when a real
-feature needs it.
+redundant frames. Those layers exist in `video.py` and `summarize.py`, with frame
+annotations in `overlay.py`.
 
 **Still undecided:** whether summarization should go beyond frame-dropping — object or
 person detection, event/scene segmentation, keyframe thumbnails, burned-in timestamps,

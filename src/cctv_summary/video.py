@@ -11,6 +11,8 @@ from typing import Protocol
 import cv2
 from cv2.typing import MatLike
 
+from cctv_summary.overlay import draw_fast_forward
+
 DEFAULT_WINDOW_NAME = "cctv-summary"
 
 # Used when a container reports no usable frame rate, so playback still has a pace.
@@ -213,9 +215,11 @@ def play(
 ) -> int:
     """Play ``path`` frame by frame and return how many frames were shown.
 
-    With ``headless=True`` frames are decoded without a window and as fast as
-    possible, so ``speed`` has no effect. Playback stops early when the viewer
-    presses ``q`` or Escape. An explicit ``display`` overrides ``headless``.
+    When ``speed`` is above 1 a fast-forward badge is drawn in the top-right
+    corner, so sped-up playback is obvious on screen. With ``headless=True``
+    frames are decoded without a window and as fast as possible, so ``speed``
+    and the badge have no effect. Playback stops early when the viewer presses
+    ``q`` or Escape. An explicit ``display`` overrides ``headless``.
     """
     if speed <= 0:
         raise VideoError(f"Playback speed must be greater than zero, got {speed}")
@@ -230,10 +234,12 @@ def play(
     else:
         surface = WindowDisplay()
 
+    badge_speed = speed > 1.0 and not headless
+
     shown = 0
     try:
         for frame in iter_frames(path):
-            surface.show(frame)
+            surface.show(draw_fast_forward(frame, speed) if badge_speed else frame)
             shown += 1
             if surface.wait(delay_ms) in QUIT_KEYS:
                 break

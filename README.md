@@ -37,7 +37,7 @@ frames:      750
 duration:    30.000s
 ```
 
-Play a clip in a window — press `q` or `Esc` to stop:
+Play a clip in a window - press `q` or `Esc` to stop:
 
 ```bash
 uv run cctv-summary play path/to/clip.mp4
@@ -45,14 +45,17 @@ uv run cctv-summary play path/to/clip.mp4 --speed 4
 ```
 
 `--speed` is a multiplier on the file's own frame rate, so `4` plays four times faster.
+Above `1` a fast-forward badge (`▶▶ 4x`) appears in the top-right corner, so sped-up
+playback is never mistaken for real time.
 
-Read a clip with no window at all — useful over SSH, in CI, or for timing a decode pass:
+Read a clip with no window at all - useful over SSH, in CI, or for timing a decode pass:
 
 ```bash
 uv run cctv-summary play path/to/clip.mp4 --headless
 ```
 
-Headless runs decode as fast as the file allows and ignore `--speed`.
+Headless runs decode as fast as the file allows and ignore `--speed`, so no badge is
+drawn.
 
 ## Summarize
 
@@ -92,7 +95,7 @@ moved, `threshold` decides whether *enough* pixels moved.
 Good values depend heavily on the footage. A static camera watching an empty corridor
 tolerates a high threshold; a handheld or moving camera needs a much lower one. Start
 with `--dry-run` and tune. The output keeps the source frame rate, so it plays faster
-than real time, and **audio is not preserved** — OpenCV does not carry audio.
+than real time, and **audio is not preserved** - OpenCV does not carry audio.
 
 ```bash
 uv run cctv-summary --help
@@ -115,7 +118,7 @@ uv run ruff format .
 ## Layout
 
 ```
-src/cctv_summary/   package source (cli.py, video.py, summarize.py)
+src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py)
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
 AGENTS.md           working notes for agents and contributors

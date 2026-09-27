@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cv2
+import numpy as np
 import pytest
 
 from cctv_summary.video import (
@@ -23,10 +24,12 @@ class FakeDisplay:
         self.quit_after = quit_after
         self.frames = 0
         self.delays: list[int] = []
+        self.shown: list[object] = []
         self.closed = False
 
     def show(self, frame) -> None:
         self.frames += 1
+        self.shown.append(frame)
 
     def wait(self, delay_ms: int) -> int:
         self.delays.append(delay_ms)
@@ -156,6 +159,56 @@ def test_explicit_display_overrides_headless(sample_video):
 
     assert display.frames == sample_video.frames
     assert display.closed
+
+
+def test_normal_speed_shows_frames_untouched(sample_video):
+    display = FakeDisplay()
+    source = next(iter_frames(sample_video.path))
+
+    play(sample_video.path, speed=1.0, display=display)
+
+    assert np.array_equal(display.shown[0], source)
+
+
+def test_fast_playback_badges_the_frames(sample_video):
+    display = FakeDisplay()
+    source = next(iter_frames(sample_video.path))
+
+    play(sample_video.path, speed=4.0, display=display)
+
+    shown = display.shown[0]
+    assert not np.array_equal(shown, source)
+    assert shown.shape == source.shape
+
+
+def test_badge_lands_in_the_top_right_corner(sample_video):
+    display = FakeDisplay()
+    source = next(iter_frames(sample_video.path))
+
+    play(sample_video.path, speed=4.0, display=display)
+
+    changed = np.any(display.shown[0] != source, axis=2)
+    height, width = changed.shape
+    assert changed[: height // 2, width // 2 :].any()
+    assert not changed[height // 2 :, :].any()
+
+
+def test_slower_than_real_time_is_not_badged(sample_video):
+    display = FakeDisplay()
+    source = next(iter_frames(sample_video.path))
+
+    play(sample_video.path, speed=0.5, display=display)
+
+    assert np.array_equal(display.shown[0], source)
+
+
+def test_headless_playback_is_never_badged(sample_video):
+    display = FakeDisplay()
+    source = next(iter_frames(sample_video.path))
+
+    play(sample_video.path, speed=8.0, headless=True, display=display)
+
+    assert np.array_equal(display.shown[0], source)
 
 
 def test_null_display_never_reports_a_quit_key():
