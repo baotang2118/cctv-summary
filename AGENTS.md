@@ -33,12 +33,13 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
 
-**Status: video I/O and frame-dropping summarization work.** The app reads and plays
-video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play`
-shows a file in a window (badging the corner when `--speed` is above 1) or decodes
-headless (`--headless`); `cctv-summary summarize` writes a shorter copy that keeps only
-frames that changed, with a scissors mark burned into every output frame. There is no
-object/person detection or scene understanding.
+**Status: video I/O and motion-event summarization work.** The app reads and plays video
+with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play` shows a
+file in a window (badging the corner when `--speed` is above 1) or decodes headless
+(`--headless`); `cctv-summary summarize` finds the stretches where something moves and
+writes them out as continuous clips, listing their timestamps and burning a scissors mark
+into every output frame. Motion is raw pixel change — there is no object or person
+detection, so a swaying tree counts as an event.
 
 ## Toolchain
 
@@ -74,7 +75,7 @@ src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
-src/cctv_summary/summarize.py  frame selection: change_score, RollingBackground, stats
+src/cctv_summary/summarize.py  motion scoring, event detection, summarize_video
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
 tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
@@ -87,38 +88,44 @@ the repo root.
 
 ## How summarization works
 
-`summarize.py` drops redundant frames so the output is shorter. Per frame it computes a
-**motion-area score** — absdiff on a downscaled grayscale copy, threshold each pixel by
-`tolerance`, then take `moved_pixels / total_pixels` (0.0–1.0).
+`summarize.py` keeps **motion events** and drops the dead time between them. It does not
+select frames individually: an earlier frame-dropping design produced scattered stills
+that were unwatchable and lost any sense of when things happened.
 
-A frame is dropped only when it scores below `threshold` against **both**:
+Three stages:
 
-1. the previous **kept** frame — ordinary stillness, and
-2. the **rolling background** (mean of the last `window` frames) — slow drift, where each
-   step is tiny but the scene has clearly moved. Dropping the background check silently
-   breaks drift detection; `tests/test_summarize.py` has a regression test for exactly
-   this.
+1. **Score** every frame — `motion_scores()` gives `moved_pixels / total_pixels`
+   (0.0–1.0) from an absdiff against the **rolling background** (mean of the last
+   `window` frames), with each pixel thresholded by `tolerance`. Comparing against the
+   background rather than the previous frame is deliberate: a slow walker keeps scoring
+   the whole time they cross, instead of only when they move quickly.
+2. **Group** the signal — `detect_events()` opens an event when the score reaches
+   `threshold` and closes it only after the score has stayed below `threshold *
+   STOP_RATIO` for `cooldown_seconds`. That hysteresis is what stops one walker pausing
+   mid-frame from becoming three events. Events shorter than `min_event_seconds` are
+   dropped **before** padding, so padding cannot rescue camera noise; survivors are then
+   padded by `pad_seconds` either side and merged where they overlap.
+3. **Write** the kept ranges, badged with the scissors mark.
 
-The first frame is always kept. **Every** decoded frame feeds the window, including
-dropped ones. Output is written at the source fps, so it is shorter but no longer
-wall-clock accurate, and OpenCV carries no audio.
+**The source is decoded twice.** Padding reaches backwards from the moment motion is
+noticed, and buffering an hour of frames to look behind is not viable, so pass one scores
+and pass two writes. Do not "optimise" this into a single pass without solving the
+look-behind problem.
 
-Every written frame gets a scissors badge (`draw_summarized`) burned in, so a summary
-stays identifiable however it is later played or copied. Selection stays pure — the badge
-is applied in `summarize_video()` as frames are written, never inside `select_frames()`.
-`--dry-run` writes nothing, so it draws nothing. Marking is deliberately single-pass: the
-final kept ratio is unknown until the last frame, so the badge carries no percentage
-rather than decoding the file twice.
+Output is written at the source fps, so it is shorter but no longer wall-clock accurate,
+and OpenCV carries no audio. `SummaryStats.events` carries the timings, which the CLI
+prints as an `HH:MM:SS` table — for a 60-minute recording, knowing *when* something
+happened matters as much as the clip itself.
 
 **`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
 pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
 
-Scores are compared with `<`, so `--threshold 1.0` still keeps a frame that changed by
-exactly 100%.
-
-Sensible thresholds are footage-dependent. On a 1280x720 handheld webcam clip the default
-`0.10` kept only 1.6% of frames; `0.02` kept 16.5%. Static-camera CCTV tolerates far
-higher thresholds than moving-camera footage.
+**Calibration, measured not guessed.** On a synthetic 640x360 corridor clip a walking
+person scores **~0.01** (1% of pixels) and peaks at 0.027; idle frames score ~0.0000.
+That is why `DEFAULT_THRESHOLD` is `0.01` and not something like `0.10` — at 0.05 the
+same clip lost every event and returned a single frame. A distant figure covers very
+little of the frame, so thresholds in the tenths are wrong for CCTV by an order of
+magnitude.
 
 ## Conventions
 
@@ -132,9 +139,10 @@ higher thresholds than moving-camera footage.
   other modules. Use `probe()`, `iter_frames()`, `open_capture()`, `write_frames()`;
   they validate input and always release the handle. `write_frames` raises rather than
   leaving the 0-byte file `VideoWriter` produces when a codec is missing.
-- **Selection logic stays pure.** `select_frames()` takes and returns plain frame
-  iterables with no file I/O, so it is testable with synthetic numpy arrays. Keep file
-  handling in `summarize_video()`.
+- **Selection logic stays pure.** `motion_scores()` and `detect_events()` take and return
+  plain values with no file I/O, so event logic is testable with a sketched signal
+  (`"...###..."`) instead of real footage. Keep decoding and encoding in
+  `summarize_video()`.
 - **Errors.** `video.py` and `summarize.py` raise `VideoError` for anything a user can
   cause (missing file, unreadable container, bad speed/threshold/window, no GUI, missing
   codec). `main()` catches it, prints `error: ...` to stderr, and returns `1`. Never let
@@ -200,6 +208,12 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
   writes a tiny MJPG clip to a temp dir and carries its own `path`, `width`, `height`,
   `fps`, and `frames`, so assertions never hardcode those numbers. **No media files are
   committed** — keep it that way.
+- **`sample_video` is never still.** It ramps brightness every frame, so it always
+  registers motion, even at `--threshold 1.0`. Tests about *absence* of motion must
+  synthesise their own static clip.
+- Test event logic with a sketched signal via the `signal("..###..")` helper rather than
+  real footage: the interesting cases (hysteresis, merging, blip rejection) are about the
+  score sequence, not pixels.
 - **Tests must never open a window.** Use `headless=True`, pass a fake `Display` to
   `play()`, or monkeypatch `cctv_summary.cli.play`. `tests/test_video.py::FakeDisplay`
   is the reference fake and can simulate a quit key.
@@ -212,14 +226,15 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 
 ## Next steps
 
-**Decided:** the app reads and plays video with OpenCV, and summarizes by dropping
-redundant frames. Those layers exist in `video.py` and `summarize.py`, with frame
-annotations in `overlay.py`.
+**Decided:** the app reads and plays video with OpenCV, and summarizes by detecting
+motion events and keeping them as continuous clips. Those layers exist in `video.py` and
+`summarize.py`, with frame annotations in `overlay.py`. Frame-by-frame dropping was tried
+first and replaced: it produced scattered, unwatchable stills.
 
-**Still undecided:** whether summarization should go beyond frame-dropping — object or
-person detection, event/scene segmentation, keyframe thumbnails, burned-in timestamps,
-text summaries, and whether live RTSP input is in scope. Also unresolved: how to pick a
-threshold automatically instead of asking the user to tune it per camera.
+**Still undecided:** whether to go beyond raw pixel motion — object or person detection
+(so a swaying tree stops counting as an event), keyframe thumbnails, burned-in
+timestamps, text summaries, and whether live RTSP input is in scope. Also unresolved: how
+to pick a threshold automatically instead of asking the user to tune it per camera.
 
 Ask the user for direction before choosing a summarization approach or adding further
 heavy dependencies (model runtimes, cloud SDKs, ffmpeg bindings). Do not infer a roadmap

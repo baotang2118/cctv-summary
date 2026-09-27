@@ -59,21 +59,27 @@ drawn.
 
 ## Summarize
 
-Write a shorter copy that keeps only frames where something changed:
+Find the stretches where something moves and write them out as continuous clips,
+dropping the dead time in between:
 
 ```bash
 uv run cctv-summary summarize clip.mp4 summary.mp4
 ```
 
 ```
-frames in:   1120
-frames kept: 185 (16.5%)
-dropped:     935
-duration:    37.33s -> 6.17s
-wrote:       summary.mp4
+source:   1200 frames, 00:02:00
+events:   3
+    1. 00:00:18 - 00:00:30  (12.0s)
+    2. 00:00:58 - 00:01:08  (10.0s)
+    3. 00:01:28 - 00:01:42  (14.0s)
+summary:  360 frames, 00:00:36 (30.0% of source)
+wrote:    summary.mp4
 ```
 
-Check the keep/drop ratio without writing anything:
+The timestamps refer to the **original** recording, so the listing doubles as an index of
+when things happened — useful when the source is an hour long.
+
+See what would be kept without writing anything:
 
 ```bash
 uv run cctv-summary summarize clip.mp4 --dry-run
@@ -85,23 +91,45 @@ burned into the pixels — there is no way to strip it from an existing summary,
 the original if you need unmarked footage. Playing a summary with `--speed` above 1
 stacks the fast-forward badge beneath the scissors rather than on top of it.
 
-A frame is dropped only when it looks unchanged against **both** the previous kept frame
-and a rolling average of recent frames. The second check catches slow drift, where each
-frame barely differs from the last but the scene has clearly moved.
+### How it decides
+
+Each frame is scored by how much of it moved, measured against a rolling average of
+recent frames. An event opens when that score crosses `--threshold` and closes only after
+motion has stayed low for about a second, so someone pausing mid-shot does not get split
+into several events. Surviving events are padded by `--pad` seconds at each end and
+merged where they overlap.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--threshold` | `0.10` | Fraction of pixels that must move to keep a frame (0–1) |
-| `--window` | `30` | Frames in the rolling background window |
+| `--threshold` | `0.01` | Fraction of pixels that must move to count as motion (0–1) |
+| `--pad` | `2.0` | Seconds kept either side of an event |
+| `--min-event` | `1.0` | Ignore anything shorter than this, in seconds |
+| `--window` | `30` | Frames in the rolling background average |
 | `--tolerance` | `25` | Per-pixel intensity change counting as movement (0–255) |
 
-`--threshold` and `--tolerance` are different knobs: `tolerance` decides whether a *pixel*
-moved, `threshold` decides whether *enough* pixels moved.
+### Tuning
 
-Good values depend heavily on the footage. A static camera watching an empty corridor
-tolerates a high threshold; a handheld or moving camera needs a much lower one. Start
-with `--dry-run` and tune. The output keeps the source frame rate, so it plays faster
-than real time, and **audio is not preserved** - OpenCV does not carry audio.
+Start with `--dry-run` and adjust `--threshold` alone; it is by far the most sensitive.
+
+**A distant person covers only about 1% of the frame.** On a 640x360 corridor clip a
+walking figure scored `0.010`, peaking at `0.027`, while the empty corridor scored
+`0.0000`. Thresholds in the tenths are an order of magnitude too high for CCTV and will
+silently discard every event — at `0.05` that same clip returned a single frame.
+
+- **Missing events?** Lower `--threshold` (try `0.005`), or lower `--tolerance` if people
+  blend into the background.
+- **Too many events?** Raise `--threshold`, or raise `--min-event` to ignore brief blips.
+- **Events cut short, or one person split in two?** Raise `--pad`.
+- **Grainy night footage triggering constantly?** Raise `--tolerance` to `40`+ so sensor
+  noise stops counting as movement.
+
+Motion here is raw pixel change, with no idea what a person is — rain, headlights and a
+swaying branch all count. Expect to tune per camera rather than globally.
+
+The source is decoded twice, once to measure motion and once to write, because padding
+has to reach back before the moment motion was noticed. Expect roughly double the time of
+a single pass. The output keeps the source frame rate, and **audio is not preserved** —
+OpenCV does not carry audio.
 
 ```bash
 uv run cctv-summary --help
@@ -132,8 +160,8 @@ AGENTS.md           working notes for agents and contributors
 
 ## Status
 
-Reading, playing, and frame-drop summarization work. There is no object or person
-detection, scene segmentation, or text summary yet.
+Reading, playing, and motion-event summarization work. Motion is raw pixel change —
+there is no object or person detection, scene segmentation, or text summary yet.
 
 ## Agent notes
 

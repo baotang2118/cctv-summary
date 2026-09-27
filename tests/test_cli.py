@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import cv2
+import numpy as np
 import pytest
 
 from cctv_summary import __version__
@@ -98,3 +100,78 @@ def test_play_surfaces_video_errors(monkeypatch, capsys, tmp_path):
 
     assert main(["play", str(tmp_path / "clip.avi")]) == 1
     assert "error: boom" in capsys.readouterr().err
+
+
+def test_summarize_requires_a_destination(sample_video, capsys):
+    assert main(["summarize", str(sample_video.path)]) == 1
+    assert "output path is required" in capsys.readouterr().err
+
+
+def test_summarize_dry_run_needs_no_destination(sample_video, capsys):
+    assert main(["summarize", str(sample_video.path), "--dry-run"]) == 0
+    assert "dry run" in capsys.readouterr().out
+
+
+def test_summarize_reports_events_with_timestamps(sample_video, capsys):
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--threshold",
+                "0.001",
+                "--min-event",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "events:" in out
+    assert "00:00:" in out
+
+
+def test_summarize_says_so_when_nothing_moves(tmp_path, capsys):
+    # The sample_video fixture ramps brightness every frame, so it always has
+    # motion. This needs footage that genuinely sits still.
+    still = tmp_path / "still.avi"
+    writer = cv2.VideoWriter(
+        str(still), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 48)
+    )
+    if not writer.isOpened():
+        pytest.skip("No MJPG encoder available.")
+    for _ in range(30):
+        writer.write(np.full((48, 64, 3), 90, np.uint8))
+    writer.release()
+
+    assert main(["summarize", str(still), "--dry-run"]) == 0
+    assert "no motion found" in capsys.readouterr().out
+
+
+def test_summarize_writes_a_file(sample_video, tmp_path, capsys):
+    destination = tmp_path / "summary.avi"
+
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                str(destination),
+                "--threshold",
+                "0.001",
+                "--min-event",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    assert destination.exists()
+    assert "wrote:" in capsys.readouterr().out
+
+
+def test_summarize_surfaces_video_errors(tmp_path, capsys):
+    assert main(["summarize", str(tmp_path / "nope.avi"), "--dry-run"]) == 1
+    assert "error:" in capsys.readouterr().err

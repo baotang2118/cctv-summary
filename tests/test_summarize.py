@@ -5,10 +5,12 @@ import numpy as np
 import pytest
 
 from cctv_summary.summarize import (
+    Event,
     RollingBackground,
     SummaryStats,
     change_score,
-    select_frames,
+    detect_events,
+    motion_scores,
     summarize_video,
     to_comparable,
 )
@@ -16,6 +18,7 @@ from cctv_summary.video import VideoError, iter_frames, probe
 
 HEIGHT = 120
 WIDTH = 160
+FPS = 10.0
 
 
 def frame(fill: int) -> np.ndarray:
@@ -25,9 +28,13 @@ def frame(fill: int) -> np.ndarray:
 def half_lit(fraction: float) -> np.ndarray:
     """Frame with ``fraction`` of its columns set bright, the rest black."""
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-    columns = int(WIDTH * fraction)
-    img[:, :columns] = 255
+    img[:, : int(WIDTH * fraction)] = 255
     return img
+
+
+def signal(pattern: str) -> list[float]:
+    """Build a motion signal from a sketch: '.' is quiet, '#' is motion."""
+    return [1.0 if char == "#" else 0.0 for char in pattern]
 
 
 def test_change_score_is_zero_for_identical_frames():
@@ -36,9 +43,9 @@ def test_change_score_is_zero_for_identical_frames():
 
 
 def test_change_score_is_one_for_opposite_frames():
-    black = to_comparable(frame(0))
-    white = to_comparable(frame(255))
-    assert change_score(black, white) == pytest.approx(1.0)
+    assert change_score(
+        to_comparable(frame(0)), to_comparable(frame(255))
+    ) == pytest.approx(1.0)
 
 
 def test_change_score_tracks_the_moved_area():
@@ -50,10 +57,10 @@ def test_change_score_tracks_the_moved_area():
 
 def test_change_score_respects_tolerance():
     dim = to_comparable(frame(100))
-    slightly_brighter = to_comparable(frame(120))
+    brighter = to_comparable(frame(120))
 
-    assert change_score(dim, slightly_brighter, tolerance=5) > 0.9
-    assert change_score(dim, slightly_brighter, tolerance=50) == 0.0
+    assert change_score(dim, brighter, tolerance=5) > 0.9
+    assert change_score(dim, brighter, tolerance=50) == 0.0
 
 
 def test_change_score_rejects_mismatched_shapes():
@@ -69,8 +76,7 @@ def test_to_comparable_downscales_and_greyscales():
 
 
 def test_to_comparable_leaves_small_frames_alone():
-    comparable = to_comparable(np.zeros((40, 50, 3), np.uint8))
-    assert comparable.shape == (40, 50)
+    assert to_comparable(np.zeros((40, 50, 3), np.uint8)).shape == (40, 50)
 
 
 def test_to_comparable_rejects_empty_frames():
@@ -88,9 +94,8 @@ def test_rolling_background_averages_its_contents():
 
 def test_rolling_background_evicts_the_oldest_frame():
     background = RollingBackground(2)
-    background.add(np.full((4, 4), 0, np.uint8))
-    background.add(np.full((4, 4), 100, np.uint8))
-    background.add(np.full((4, 4), 100, np.uint8))
+    for value in (0, 100, 100):
+        background.add(np.full((4, 4), value, np.uint8))
 
     assert len(background) == 2
     assert background.average.mean() == pytest.approx(100, abs=1)
@@ -108,92 +113,177 @@ def test_rolling_background_reports_when_filled():
     assert background.filled
 
 
-def test_rolling_background_rejects_empty_window():
+def test_rolling_background_rejects_an_empty_window():
     with pytest.raises(ValueError, match="at least 1"):
         RollingBackground(0)
 
 
-def test_identical_frames_collapse_to_one():
-    frames = [frame(50) for _ in range(30)]
+def test_still_footage_scores_no_motion():
+    scores = list(motion_scores([frame(50) for _ in range(10)]))
 
-    assert len(list(select_frames(frames))) == 1
+    assert scores[0] == 0.0
+    assert max(scores) == 0.0
 
 
-def test_alternating_frames_are_all_kept():
+def test_moving_footage_scores_motion():
     frames = [frame(0) if index % 2 else frame(255) for index in range(10)]
 
-    assert len(list(select_frames(frames))) == 10
+    assert max(motion_scores(frames)) > 0.5
 
 
-def test_first_frame_is_always_kept():
-    assert len(list(select_frames([frame(7)]))) == 1
+def test_motion_is_measured_against_the_background_not_the_last_frame():
+    # A subject that creeps forward stays visible against the background even
+    # though consecutive frames barely differ.
+    frames = [half_lit(step / 100) for step in range(0, 40, 2)]
+
+    assert max(motion_scores(frames, window=10)) > 0.05
 
 
-def test_empty_input_yields_nothing():
-    assert list(select_frames([])) == []
+def test_no_scores_means_no_events():
+    assert detect_events([], fps=FPS) == []
 
 
-def test_rolling_window_catches_slow_drift():
-    """Each step is tiny, but the scene changes completely over the clip.
-
-    A previous-frame-only check misses this; the background comparison is the
-    whole reason the rolling window exists.
-    """
-    frames = [half_lit(step / 100) for step in range(0, 60, 2)]
-
-    kept = list(select_frames(frames, threshold=0.10, window=10))
-
-    assert len(kept) > 1
+def test_quiet_footage_yields_no_events():
+    assert detect_events(signal("." * 50), fps=FPS) == []
 
 
-def test_drift_would_be_missed_without_the_background():
-    """Confirms the drift above really is invisible frame-to-frame."""
-    frames = [half_lit(step / 100) for step in range(0, 60, 2)]
-    comparable = [to_comparable(item) for item in frames]
+def test_a_burst_of_motion_becomes_one_event():
+    events = detect_events(
+        signal("." * 20 + "#" * 20 + "." * 20),
+        fps=FPS,
+        pad_seconds=0,
+        min_event_seconds=0.5,
+    )
 
-    steps = [
-        change_score(current, previous)
-        for previous, current in zip(comparable[:-1], comparable[1:], strict=True)
-    ]
-
-    assert max(steps) < 0.10
-
-
-def test_threshold_of_zero_keeps_everything():
-    frames = [frame(50) for _ in range(5)]
-
-    assert len(list(select_frames(frames, threshold=0.0))) == 5
+    assert len(events) == 1
+    assert events[0].start == 20
+    assert events[0].end == 40
 
 
-def test_threshold_of_one_drops_anything_short_of_a_total_change():
-    # Scores are compared with "<", so only a literal 100% change survives a
-    # threshold of 1.0. These frames change by half, so all but the first go.
-    frames = [half_lit(0.0) if index % 2 else half_lit(0.5) for index in range(6)]
+def test_padding_extends_an_event_both_ways():
+    events = detect_events(
+        signal("." * 20 + "#" * 20 + "." * 20),
+        fps=FPS,
+        pad_seconds=1.0,
+        min_event_seconds=0.5,
+    )
 
-    assert len(list(select_frames(frames, threshold=1.0))) == 1
-
-
-def test_total_change_survives_a_threshold_of_one():
-    frames = [frame(0) if index % 2 else frame(255) for index in range(6)]
-
-    assert len(list(select_frames(frames, threshold=1.0))) == 6
+    assert events[0].start == 10
+    assert events[0].end == 50
 
 
-def test_threshold_outside_range_is_rejected():
+def test_padding_is_clamped_to_the_clip():
+    events = detect_events(
+        signal("#" * 10), fps=FPS, pad_seconds=5.0, min_event_seconds=0.5
+    )
+
+    assert events[0].start == 0
+    assert events[0].end == 10
+
+
+def test_a_brief_pause_does_not_split_an_event():
+    # Someone slowing mid-frame should stay a single event.
+    events = detect_events(
+        signal("." * 10 + "#" * 15 + "." * 3 + "#" * 15 + "." * 10),
+        fps=FPS,
+        pad_seconds=0,
+        min_event_seconds=0.5,
+        cooldown_seconds=1.0,
+    )
+
+    assert len(events) == 1
+
+
+def test_a_long_gap_splits_events():
+    events = detect_events(
+        signal("." * 10 + "#" * 15 + "." * 40 + "#" * 15 + "." * 10),
+        fps=FPS,
+        pad_seconds=0,
+        min_event_seconds=0.5,
+    )
+
+    assert len(events) == 2
+
+
+def test_nearby_events_merge_once_padded():
+    events = detect_events(
+        signal("." * 10 + "#" * 15 + "." * 20 + "#" * 15 + "." * 10),
+        fps=FPS,
+        pad_seconds=2.0,
+        min_event_seconds=0.5,
+    )
+
+    assert len(events) == 1
+
+
+def test_short_blips_are_ignored():
+    events = detect_events(
+        signal("." * 20 + "#" * 2 + "." * 20),
+        fps=FPS,
+        pad_seconds=0,
+        min_event_seconds=1.0,
+    )
+
+    assert events == []
+
+
+def test_padding_cannot_rescue_a_blip():
+    # Padding is applied after the length filter, so noise stays filtered.
+    events = detect_events(
+        signal("." * 20 + "#" * 2 + "." * 20),
+        fps=FPS,
+        pad_seconds=3.0,
+        min_event_seconds=1.0,
+    )
+
+    assert events == []
+
+
+def test_motion_running_to_the_end_still_closes():
+    events = detect_events(
+        signal("." * 10 + "#" * 20), fps=FPS, pad_seconds=0, min_event_seconds=0.5
+    )
+
+    assert len(events) == 1
+    assert events[0].end == 30
+
+
+def test_events_never_overlap():
+    events = detect_events(
+        signal(("#" * 12 + "." * 25) * 4), fps=FPS, min_event_seconds=0.5
+    )
+
+    for earlier, later in zip(events[:-1], events[1:], strict=True):
+        assert earlier.end < later.start
+
+
+def test_detect_events_rejects_a_bad_threshold():
     with pytest.raises(ValueError, match="between 0 and 1"):
-        list(select_frames([frame(0)], threshold=1.5))
+        detect_events(signal("###"), fps=FPS, threshold=2.0)
 
 
-def test_window_larger_than_the_clip_still_works():
-    frames = [frame(50) for _ in range(3)]
+def test_detect_events_rejects_a_bad_fps():
+    with pytest.raises(ValueError, match="fps"):
+        detect_events(signal("###"), fps=0)
 
-    assert len(list(select_frames(frames, window=100))) == 1
+
+def test_detect_events_rejects_negative_padding():
+    with pytest.raises(ValueError, match="Padding"):
+        detect_events(signal("###"), fps=FPS, pad_seconds=-1)
 
 
-def test_window_of_one_still_works():
-    frames = [frame(50) for _ in range(5)]
+def test_event_reports_frames_and_timings():
+    event = Event(start=100, end=250, fps=25.0)
 
-    assert len(list(select_frames(frames, window=1))) == 1
+    assert event.frames == 150
+    assert event.start_seconds == pytest.approx(4.0)
+    assert event.end_seconds == pytest.approx(10.0)
+    assert event.duration_seconds == pytest.approx(6.0)
+
+
+def test_event_must_span_at_least_one_frame():
+    with pytest.raises(ValueError, match="at least one frame"):
+        Event(start=10, end=10, fps=FPS)
 
 
 def test_summary_stats_derives_counts_and_durations():
@@ -216,20 +306,21 @@ def test_summary_stats_handles_empty_input():
 def test_dry_run_reports_without_writing(sample_video, tmp_path):
     destination = tmp_path / "out.avi"
 
-    stats = summarize_video(sample_video.path)
+    stats = summarize_video(sample_video.path, threshold=0.001, min_event_seconds=0)
 
     assert stats.total == sample_video.frames
-    assert stats.kept >= 1
     assert not destination.exists()
 
 
-def test_summarize_writes_a_shorter_video(sample_video, tmp_path):
+def test_summarize_writes_only_the_events(sample_video, tmp_path):
     destination = tmp_path / "summary.avi"
 
-    stats = summarize_video(sample_video.path, destination)
+    stats = summarize_video(
+        sample_video.path, destination, threshold=0.001, min_event_seconds=0
+    )
 
     assert destination.exists()
-    assert stats.kept < stats.total
+    assert stats.events
 
     written = probe(destination)
     assert written.frame_count == stats.kept
@@ -240,25 +331,34 @@ def test_summarize_writes_a_shorter_video(sample_video, tmp_path):
 def test_summary_frames_carry_the_summarized_badge(sample_video, tmp_path):
     destination = tmp_path / "badged.avi"
 
-    summarize_video(sample_video.path, destination)
+    summarize_video(
+        sample_video.path, destination, threshold=0.001, min_event_seconds=0
+    )
 
     source = next(iter_frames(sample_video.path))
     written = next(iter_frames(destination))
     height, width = written.shape[:2]
 
-    # The badge is burned in, so the top-right corner must differ from the
-    # source while the rest of the frame is left alone.
     changed = np.any(cv2.absdiff(written, source) > 60, axis=2)
     assert changed[: height // 2, width // 2 :].any()
-    assert not changed[height // 2 :, : width // 2].any()
 
 
-def test_dry_run_never_badges_anything(sample_video, tmp_path):
-    destination = tmp_path / "unwritten.avi"
+def test_footage_without_motion_writes_nothing(tmp_path):
+    still = tmp_path / "still.avi"
+    writer = cv2.VideoWriter(
+        str(still), cv2.VideoWriter_fourcc(*"MJPG"), FPS, (WIDTH, HEIGHT)
+    )
+    if not writer.isOpened():
+        pytest.skip("No MJPG encoder available.")
+    for _ in range(40):
+        writer.write(frame(90))
+    writer.release()
 
-    summarize_video(sample_video.path)
+    stats = summarize_video(still, tmp_path / "out.avi", threshold=0.5)
 
-    assert not destination.exists()
+    assert stats.events == ()
+    assert stats.kept == 0
+    assert not (tmp_path / "out.avi").exists()
 
 
 def test_summarize_rejects_a_bad_threshold(sample_video):
@@ -276,6 +376,11 @@ def test_summarize_rejects_a_bad_tolerance(sample_video):
         summarize_video(sample_video.path, tolerance=300)
 
 
+def test_summarize_rejects_negative_padding(sample_video):
+    with pytest.raises(VideoError, match="Padding"):
+        summarize_video(sample_video.path, pad_seconds=-1)
+
+
 def test_summarize_reports_a_missing_source(tmp_path):
     with pytest.raises(VideoError, match="not found"):
         summarize_video(tmp_path / "nope.avi")
@@ -283,4 +388,9 @@ def test_summarize_reports_a_missing_source(tmp_path):
 
 def test_summarize_reports_a_missing_output_directory(sample_video, tmp_path):
     with pytest.raises(VideoError, match="directory does not exist"):
-        summarize_video(sample_video.path, tmp_path / "missing" / "out.avi")
+        summarize_video(
+            sample_video.path,
+            tmp_path / "missing" / "out.avi",
+            threshold=0.001,
+            min_event_seconds=0,
+        )

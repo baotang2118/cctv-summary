@@ -1,15 +1,15 @@
-"""Frame selection that drops redundant footage to shorten a video.
+"""Motion-event summarization: keep what happens, drop the empty hours.
 
-A frame is dropped only when it looks unchanged against *both* the previous kept
-frame and a rolling background model. The previous-frame check catches ordinary
-stillness; the background check catches slow drift, where each individual frame
-barely differs from the last but the scene has clearly moved over time.
+CCTV is mostly nothing. Rather than judging frames one at a time, this scores
+every frame for motion, finds the stretches where something is happening, and
+keeps each of those as a continuous clip. Selecting whole events instead of
+individual frames keeps the action watchable and preserves when it happened.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,12 +26,29 @@ from cctv_summary.video import (
     write_frames,
 )
 
-DEFAULT_THRESHOLD = 0.10
+# Fraction of pixels that must move for a frame to count as motion. A person
+# crossing a corridor covers only about 1% of the frame, so this sits an order
+# of magnitude below what frame-to-frame differencing might suggest.
+DEFAULT_THRESHOLD = 0.01
+
+# An event ends only once motion falls below this share of the start threshold,
+# which stops a walker pausing mid-frame from splitting one event into three.
+STOP_RATIO = 0.5
 
 DEFAULT_WINDOW = 30
 
 # Per-pixel intensity delta (0-255) that counts as "this pixel moved".
 DEFAULT_TOLERANCE = 25
+
+# Seconds of footage kept either side of an event, so people are seen entering
+# and leaving rather than appearing mid-stride.
+DEFAULT_PAD_SECONDS = 2.0
+
+# Events shorter than this are treated as noise rather than something happening.
+DEFAULT_MIN_EVENT_SECONDS = 1.0
+
+# How long motion must stay low before an event is considered over.
+DEFAULT_COOLDOWN_SECONDS = 1.0
 
 # Frames are compared at this long-edge size: full-resolution diffs are wasteful
 # and noisier without changing the decision much.
@@ -115,12 +132,45 @@ class RollingBackground:
 
 
 @dataclass(frozen=True)
+class Event:
+    """A stretch of footage where something was happening."""
+
+    start: int
+    end: int  # exclusive
+    fps: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.end <= self.start:
+            raise ValueError(f"Event must span at least one frame, got {self!r}")
+
+    @property
+    def frames(self) -> int:
+        return self.end - self.start
+
+    @property
+    def start_seconds(self) -> float:
+        return self.start / self.fps if self.fps > 0 else 0.0
+
+    @property
+    def end_seconds(self) -> float:
+        return self.end / self.fps if self.fps > 0 else 0.0
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.frames / self.fps if self.fps > 0 else 0.0
+
+    def overlaps(self, other: Event) -> bool:
+        return self.start <= other.end and other.start <= self.end
+
+
+@dataclass(frozen=True)
 class SummaryStats:
-    """Outcome of a selection pass."""
+    """Outcome of a summarization pass."""
 
     total: int
     kept: int
     fps: float = 0.0
+    events: tuple[Event, ...] = ()
 
     @property
     def dropped(self) -> int:
@@ -145,49 +195,103 @@ class SummaryStats:
         return self.kept / self.fps
 
 
-def select_frames(
+def motion_scores(
     frames: Iterable[MatLike],
     *,
-    threshold: float = DEFAULT_THRESHOLD,
     window: int = DEFAULT_WINDOW,
     tolerance: int = DEFAULT_TOLERANCE,
-) -> Iterator[MatLike]:
-    """Yield only the frames worth keeping.
+) -> Iterator[float]:
+    """Yield the fraction of pixels moving in each frame, 0.0-1.0.
 
-    The first frame is always kept, since there is nothing to compare it to.
-    Every decoded frame feeds the rolling window, including dropped ones, so the
-    background reflects what the camera actually sees.
+    Motion is measured against a rolling background rather than the previous
+    frame, so a slow walker registers for as long as they are crossing rather
+    than only when they move quickly.
     """
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError(f"Threshold must be between 0 and 1, got {threshold}")
-
     background = RollingBackground(window)
-    previous: np.ndarray | None = None
 
     for frame in frames:
         comparable = to_comparable(frame)
-
-        if previous is None:
-            background.add(comparable)
-            previous = comparable
-            yield frame
-            continue
-
         average = background.average
-        against_previous = change_score(comparable, previous, tolerance=tolerance)
-        against_background = (
+        score = (
             change_score(comparable, average, tolerance=tolerance)
             if average is not None
-            else 1.0
+            else 0.0
         )
-
         background.add(comparable)
+        yield score
 
-        if against_previous < threshold and against_background < threshold:
+
+def detect_events(
+    scores: Sequence[float] | Iterable[float],
+    *,
+    fps: float,
+    threshold: float = DEFAULT_THRESHOLD,
+    pad_seconds: float = DEFAULT_PAD_SECONDS,
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+    cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+) -> list[Event]:
+    """Group a motion signal into padded events.
+
+    Uses hysteresis: an event opens when motion exceeds ``threshold`` and only
+    closes once motion has stayed below half that for ``cooldown_seconds``. A
+    single threshold would chop one walker into several events every time they
+    slowed down.
+    """
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"Threshold must be between 0 and 1, got {threshold}")
+    if fps <= 0:
+        raise ValueError(f"fps must be greater than zero, got {fps}")
+    if pad_seconds < 0:
+        raise ValueError(f"Padding cannot be negative, got {pad_seconds}")
+
+    values = list(scores)
+    if not values:
+        return []
+
+    stop_threshold = threshold * STOP_RATIO
+    cooldown = max(round(cooldown_seconds * fps), 1)
+    pad = max(round(pad_seconds * fps), 0)
+    min_frames = max(round(min_event_seconds * fps), 1)
+
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    quiet = 0
+
+    for index, score in enumerate(values):
+        if start is None:
+            if score >= threshold:
+                start = index
+                quiet = 0
             continue
 
-        previous = comparable
-        yield frame
+        if score >= stop_threshold:
+            quiet = 0
+            continue
+
+        quiet += 1
+        if quiet >= cooldown:
+            spans.append((start, index - quiet + 1))
+            start = None
+            quiet = 0
+
+    if start is not None:
+        spans.append((start, len(values)))
+
+    # Discard blips before padding, so padding cannot rescue camera noise.
+    spans = [span for span in spans if span[1] - span[0] >= min_frames]
+
+    padded = [
+        (max(begin - pad, 0), min(finish + pad, len(values))) for begin, finish in spans
+    ]
+
+    merged: list[tuple[int, int]] = []
+    for span in padded:
+        if merged and span[0] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], span[1]))
+        else:
+            merged.append(span)
+
+    return [Event(start=begin, end=finish, fps=fps) for begin, finish in merged]
 
 
 def summarize_video(
@@ -197,11 +301,17 @@ def summarize_video(
     threshold: float = DEFAULT_THRESHOLD,
     window: int = DEFAULT_WINDOW,
     tolerance: int = DEFAULT_TOLERANCE,
+    pad_seconds: float = DEFAULT_PAD_SECONDS,
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
 ) -> SummaryStats:
-    """Write a shortened copy of ``source`` keeping only changed frames.
+    """Write a copy of ``source`` containing only its motion events.
 
     With ``destination=None`` the footage is analysed but nothing is written,
     which is what ``--dry-run`` uses.
+
+    The source is decoded twice: once to score motion, once to write. Padding
+    reaches backwards from the moment motion is noticed, and buffering an hour
+    of frames to look behind is not viable.
     """
     if not 0.0 <= threshold <= 1.0:
         raise VideoError(f"Threshold must be between 0 and 1, got {threshold}")
@@ -209,30 +319,49 @@ def summarize_video(
         raise VideoError(f"Window must be at least 1 frame, got {window}")
     if not 0 <= tolerance <= 255:
         raise VideoError(f"Tolerance must be between 0 and 255, got {tolerance}")
+    if pad_seconds < 0:
+        raise VideoError(f"Padding cannot be negative, got {pad_seconds}")
+    if min_event_seconds < 0:
+        raise VideoError(
+            f"Minimum event length cannot be negative, got {min_event_seconds}"
+        )
 
     info = probe(source)
     fps = info.fps if info.fps > 0 else FALLBACK_FPS
-    total = 0
 
-    def counted(frames: Iterable[MatLike]) -> Iterator[MatLike]:
-        nonlocal total
-        for frame in frames:
-            total += 1
-            yield frame
-
-    selected = select_frames(
-        counted(iter_frames(source)),
+    scores = list(
+        motion_scores(iter_frames(source), window=window, tolerance=tolerance)
+    )
+    events = detect_events(
+        scores,
+        fps=fps,
         threshold=threshold,
-        window=window,
-        tolerance=tolerance,
+        pad_seconds=pad_seconds,
+        min_event_seconds=min_event_seconds,
     )
 
-    if destination is None:
-        kept = sum(1 for _ in selected)
-    else:
-        # Burn the marker in as frames are written, so a summary stays
-        # identifiable however it is played later.
-        badged = (draw_summarized(frame) for frame in selected)
-        kept = write_frames(destination, badged, fps=fps)
+    total = len(scores)
+    kept = sum(event.frames for event in events)
 
-    return SummaryStats(total=total, kept=kept, fps=fps)
+    if destination is not None and kept:
+        write_frames(
+            destination,
+            _event_frames(source, events),
+            fps=fps,
+        )
+
+    return SummaryStats(total=total, kept=kept, fps=fps, events=tuple(events))
+
+
+def _event_frames(source: str | Path, events: Sequence[Event]) -> Iterator[MatLike]:
+    """Re-decode ``source`` and yield only the frames inside ``events``."""
+    if not events:
+        return
+
+    for index, frame in enumerate(iter_frames(source)):
+        if index >= events[-1].end:
+            return
+        if any(event.start <= index < event.end for event in events):
+            # Burn the marker in as frames are written, so a summary stays
+            # identifiable however it is played later.
+            yield draw_summarized(frame)
