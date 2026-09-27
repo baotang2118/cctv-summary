@@ -96,16 +96,41 @@ Three stages:
 
 1. **Score** every frame — `motion_scores()` gives `moved_pixels / total_pixels`
    (0.0–1.0) from an absdiff against the **rolling background** (mean of the last
-   `window` frames), with each pixel thresholded by `tolerance`. Comparing against the
-   background rather than the previous frame is deliberate: a slow walker keeps scoring
-   the whole time they cross, instead of only when they move quickly.
-2. **Group** the signal — `detect_events()` opens an event when the score reaches
-   `threshold` and closes it only after the score has stayed below `threshold *
-   STOP_RATIO` for `cooldown_seconds`. That hysteresis is what stops one walker pausing
-   mid-frame from becoming three events. Events shorter than `min_event_seconds` are
-   dropped **before** padding, so padding cannot rescue camera noise; survivors are then
-   padded by `pad_seconds` either side and merged where they overlap.
+   `window` frames), with each pixel thresholded by `tolerance`.
+2. **Group** the signal into events — `detect_events()`, described below.
 3. **Write** the kept ranges, badged with the scissors mark.
+
+### Why events survive intact
+
+The guiding principle is **eager to start, reluctant to stop**. Four mechanisms combine,
+and each one exists to fix a specific failure:
+
+| # | Mechanism | Without it |
+| --- | --- | --- |
+| 1 | Score against the **rolling background**, not the previous frame | A slow walker barely differs from the frame before and vanishes. Frame differencing measures *speed*; background differencing measures *presence*. |
+| 2 | **Hysteresis** — open at `threshold`, close at `threshold * STOP_RATIO` | A single threshold flickers on and off around the boundary. |
+| 3 | **Cooldown** — motion must stay low for `cooldown_seconds` to close | A walker pausing mid-shot splits into several events. |
+| 4 | **Padding** `pad_seconds` either side, then merge overlaps | People appear mid-stride with no lead-in, and two arrivals seconds apart become separate clips with a jarring cut. |
+
+Traced on one walker who pauses mid-shot, plus a 2-frame noise blip:
+
+```
+raw >= threshold  ..............#####...####............##............
+                                      ^pause            ^blip
+1. threshold only ..............KKKKKK..KKKKK...........KK............  3 events -- walker split
+2. + cooldown     ..............KKKKKKKKKKKKK...........KK............  2 events -- pause bridged
+3. + min-event    ..............KKKKKKKKKKKKK.........................  1 event  -- blip rejected
+4. + padding      KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK.....  1 event  -- lead-in/out
+```
+
+Two details in `detect_events()` are load-bearing and easy to break:
+
+- **Order is filter → pad → merge.** Dropping events shorter than `min_event_seconds`
+  happens *before* padding. Reverse it and `--pad 3` inflates a 2-frame noise blip into a
+  6-second "event" that then passes the length filter. `test_padding_cannot_rescue_a_blip`
+  pins this.
+- **The close point rewinds** to `index - quiet + 1`, so the silent frames that proved the
+  event was over are not themselves counted as part of it.
 
 **The source is decoded twice.** Padding reaches backwards from the moment motion is
 noticed, and buffering an hour of frames to look behind is not viable, so pass one scores
