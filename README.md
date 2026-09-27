@@ -79,6 +79,12 @@ Check the keep/drop ratio without writing anything:
 uv run cctv-summary summarize clip.mp4 --dry-run
 ```
 
+Every frame of the output carries a scissors mark (`✂`) in the top-right corner, so a
+summary is recognisable as one even after being renamed, copied, or shared. The mark is
+burned into the pixels — there is no way to strip it from an existing summary, so keep
+the original if you need unmarked footage. Playing a summary with `--speed` above 1
+stacks the fast-forward badge beneath the scissors rather than on top of it.
+
 A frame is dropped only when it looks unchanged against **both** the previous kept frame
 and a rolling average of recent frames. The second check catches slow drift, where each
 frame barely differs from the last but the scene has clearly moved.

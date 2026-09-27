@@ -37,7 +37,8 @@ Non-negotiable. Apply these to **every** code change, however small.
 video with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play`
 shows a file in a window (badging the corner when `--speed` is above 1) or decodes
 headless (`--headless`); `cctv-summary summarize` writes a shorter copy that keeps only
-frames that changed. There is no object/person detection or scene understanding.
+frames that changed, with a scissors mark burned into every output frame. There is no
+object/person detection or scene understanding.
 
 ## Toolchain
 
@@ -72,7 +73,7 @@ src/cctv_summary/__init__.py   package docstring + __version__
 src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
-src/cctv_summary/overlay.py    frame annotations (draw_fast_forward speed badge)
+src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
 src/cctv_summary/summarize.py  frame selection: change_score, RollingBackground, stats
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
 tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
@@ -101,6 +102,13 @@ A frame is dropped only when it scores below `threshold` against **both**:
 The first frame is always kept. **Every** decoded frame feeds the window, including
 dropped ones. Output is written at the source fps, so it is shorter but no longer
 wall-clock accurate, and OpenCV carries no audio.
+
+Every written frame gets a scissors badge (`draw_summarized`) burned in, so a summary
+stays identifiable however it is later played or copied. Selection stays pure — the badge
+is applied in `summarize_video()` as frames are written, never inside `select_frames()`.
+`--dry-run` writes nothing, so it draws nothing. Marking is deliberately single-pass: the
+final kept ratio is unknown until the last frame, so the badge carries no percentage
+rather than decoding the file twice.
 
 **`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
 pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
@@ -136,9 +144,16 @@ higher thresholds than moving-camera footage.
   `frame.copy()`. Sizes derive from the frame dimensions so markers scale with
   resolution instead of vanishing on 1080p.
 - **Overlays need a backing plate, not an outline.** White marks with a thin dark outline
-  are unreadable on bright footage; `draw_fast_forward` darkens a rectangle behind the
-  badge first. Test legibility by asserting on contrast (`corner.min()` / `corner.max()`)
-  against white *and* black frames, not just "some pixels changed".
+  are unreadable on bright footage; badges darken a rectangle behind themselves first.
+  Test legibility by asserting on contrast (`corner.min()` / `corner.max()`) against
+  white *and* black frames, not just "some pixels changed".
+- **Badges occupy fixed slots in the top-right.** `SUMMARY_SLOT` is burned into the file
+  by `summarize`; `SPEED_SLOT` is drawn during playback and stacks below it. Playback
+  cannot tell whether a file already carries the summary mark, so the slots are reserved
+  statically rather than packed. Give any new badge its own slot.
+- **Inset the plate, not the glyph.** `_badge_box()` positions the *plate* inside the
+  margin; insetting the glyph instead lets the plate bleed off the frame edge. The margin
+  also shrinks on small frames, or a fixed inset drags the badge toward the middle.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol
   (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept

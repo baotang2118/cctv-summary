@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 from cv2.typing import MatLike
 
+from cctv_summary.overlay import draw_summarized
 from cctv_summary.video import (
     FALLBACK_FPS,
     VideoError,
@@ -229,6 +230,9 @@ def summarize_video(
     if destination is None:
         kept = sum(1 for _ in selected)
     else:
-        kept = write_frames(destination, selected, fps=fps)
+        # Burn the marker in as frames are written, so a summary stays
+        # identifiable however it is played later.
+        badged = (draw_summarized(frame) for frame in selected)
+        kept = write_frames(destination, badged, fps=fps)
 
     return SummaryStats(total=total, kept=kept, fps=fps)

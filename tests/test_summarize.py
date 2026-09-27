@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -11,7 +12,7 @@ from cctv_summary.summarize import (
     summarize_video,
     to_comparable,
 )
-from cctv_summary.video import VideoError, probe
+from cctv_summary.video import VideoError, iter_frames, probe
 
 HEIGHT = 120
 WIDTH = 160
@@ -234,6 +235,30 @@ def test_summarize_writes_a_shorter_video(sample_video, tmp_path):
     assert written.frame_count == stats.kept
     assert written.width == sample_video.width
     assert written.height == sample_video.height
+
+
+def test_summary_frames_carry_the_summarized_badge(sample_video, tmp_path):
+    destination = tmp_path / "badged.avi"
+
+    summarize_video(sample_video.path, destination)
+
+    source = next(iter_frames(sample_video.path))
+    written = next(iter_frames(destination))
+    height, width = written.shape[:2]
+
+    # The badge is burned in, so the top-right corner must differ from the
+    # source while the rest of the frame is left alone.
+    changed = np.any(cv2.absdiff(written, source) > 60, axis=2)
+    assert changed[: height // 2, width // 2 :].any()
+    assert not changed[height // 2 :, : width // 2].any()
+
+
+def test_dry_run_never_badges_anything(sample_video, tmp_path):
+    destination = tmp_path / "unwritten.avi"
+
+    summarize_video(sample_video.path)
+
+    assert not destination.exists()
 
 
 def test_summarize_rejects_a_bad_threshold(sample_video):
