@@ -56,7 +56,7 @@ DEFAULT_COOLDOWN_SECONDS = 1.0
 COMPARISON_EDGE = 320
 
 
-def to_comparable(frame: MatLike) -> np.ndarray:
+def downscale_to_gray(frame: MatLike) -> np.ndarray:
     """Downscale and grayscale a frame for cheap, noise-tolerant comparison."""
     height, width = frame.shape[:2]
     if height == 0 or width == 0:
@@ -82,10 +82,10 @@ def change_score(
     *,
     tolerance: int = DEFAULT_TOLERANCE,
 ) -> float:
-    """Fraction of pixels (0.0-1.0) that moved between two comparable frames.
+    """Fraction of pixels (0.0-1.0) that moved between two prepared frames.
 
     Both inputs must already be grayscale and the same shape; use
-    :func:`to_comparable` first.
+    :func:`downscale_to_gray` first.
     """
     if current.shape != reference.shape:
         raise ValueError(
@@ -99,7 +99,7 @@ def change_score(
 
 
 class RollingBackground:
-    """Mean of the most recent ``size`` comparable frames.
+    """Mean of the most recent ``size`` greyscale frames.
 
     Frames accumulate as float so repeated averaging does not drift the way
     uint8 rounding would.
@@ -128,7 +128,7 @@ class RollingBackground:
         return stacked.mean(axis=0).astype(np.uint8)
 
     def add(self, frame: np.ndarray) -> None:
-        """Append a comparable frame, evicting the oldest once full."""
+        """Append a greyscale frame, evicting the oldest once full."""
         self._frames.append(frame)
 
 
@@ -211,14 +211,14 @@ def motion_scores(
     background = RollingBackground(window)
 
     for frame in frames:
-        comparable = to_comparable(frame)
+        gray = downscale_to_gray(frame)
         average = background.average
         score = (
-            change_score(comparable, average, tolerance=tolerance)
+            change_score(gray, average, tolerance=tolerance)
             if average is not None
             else 0.0
         )
-        background.add(comparable)
+        background.add(gray)
         yield score
 
 

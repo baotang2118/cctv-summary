@@ -10,9 +10,9 @@ from cctv_summary.summarize import (
     SummaryStats,
     change_score,
     detect_events,
+    downscale_to_gray,
     motion_scores,
     summarize_video,
-    to_comparable,
 )
 from cctv_summary.video import VideoError, iter_frames, probe
 
@@ -38,26 +38,26 @@ def signal(pattern: str) -> list[float]:
 
 
 def test_change_score_is_zero_for_identical_frames():
-    a = to_comparable(frame(10))
+    a = downscale_to_gray(frame(10))
     assert change_score(a, a) == 0.0
 
 
 def test_change_score_is_one_for_opposite_frames():
     assert change_score(
-        to_comparable(frame(0)), to_comparable(frame(255))
+        downscale_to_gray(frame(0)), downscale_to_gray(frame(255))
     ) == pytest.approx(1.0)
 
 
 def test_change_score_tracks_the_moved_area():
-    none = to_comparable(half_lit(0.0))
-    quarter = to_comparable(half_lit(0.25))
+    none = downscale_to_gray(half_lit(0.0))
+    quarter = downscale_to_gray(half_lit(0.25))
 
     assert change_score(none, quarter) == pytest.approx(0.25, abs=0.02)
 
 
 def test_change_score_respects_tolerance():
-    dim = to_comparable(frame(100))
-    brighter = to_comparable(frame(120))
+    dim = downscale_to_gray(frame(100))
+    brighter = downscale_to_gray(frame(120))
 
     assert change_score(dim, brighter, tolerance=5) > 0.9
     assert change_score(dim, brighter, tolerance=50) == 0.0
@@ -68,20 +68,20 @@ def test_change_score_rejects_mismatched_shapes():
         change_score(np.zeros((4, 4), np.uint8), np.zeros((5, 5), np.uint8))
 
 
-def test_to_comparable_downscales_and_greyscales():
-    comparable = to_comparable(np.zeros((1080, 1920, 3), np.uint8))
+def test_downscale_to_gray_shrinks_and_greyscales():
+    gray = downscale_to_gray(np.zeros((1080, 1920, 3), np.uint8))
 
-    assert comparable.ndim == 2
-    assert max(comparable.shape) <= 320
-
-
-def test_to_comparable_leaves_small_frames_alone():
-    assert to_comparable(np.zeros((40, 50, 3), np.uint8)).shape == (40, 50)
+    assert gray.ndim == 2
+    assert max(gray.shape) <= 320
 
 
-def test_to_comparable_rejects_empty_frames():
+def test_downscale_to_gray_leaves_small_frames_alone():
+    assert downscale_to_gray(np.zeros((40, 50, 3), np.uint8)).shape == (40, 50)
+
+
+def test_downscale_to_gray_rejects_empty_frames():
     with pytest.raises(ValueError, match="empty frame"):
-        to_comparable(np.zeros((0, 10, 3), np.uint8))
+        downscale_to_gray(np.zeros((0, 10, 3), np.uint8))
 
 
 def test_rolling_background_averages_its_contents():
