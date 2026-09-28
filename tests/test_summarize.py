@@ -118,6 +118,74 @@ def test_rolling_background_rejects_an_empty_window():
         RollingBackground(0)
 
 
+def test_the_running_total_matches_a_plain_mean():
+    # The average is accumulated incrementally, so it has to agree with the
+    # obvious implementation at every step, not just at the end.
+    rng = np.random.default_rng(7)
+    background = RollingBackground(5)
+    window = []
+
+    for _ in range(40):
+        frame = rng.integers(0, 256, (8, 9), dtype=np.uint8)
+        background.add(frame)
+        window = (window + [frame])[-5:]
+
+        expected = np.stack(window).astype(np.float64).mean(axis=0).astype(np.uint8)
+        assert np.array_equal(background.average, expected)
+
+
+def test_the_running_total_does_not_drift():
+    # Adding and subtracting floats can accumulate error. Pixel sums stay far
+    # below the range float64 represents exactly, so this must stay bit-exact
+    # however long it runs.
+    rng = np.random.default_rng(11)
+    background = RollingBackground(30)
+    window = []
+
+    for _ in range(600):
+        frame = rng.integers(0, 256, (6, 6), dtype=np.uint8)
+        background.add(frame)
+        window = (window + [frame])[-30:]
+
+    expected = np.stack(window).astype(np.float64).mean(axis=0).astype(np.uint8)
+    assert np.array_equal(background.average, expected)
+
+
+def test_a_reused_buffer_cannot_corrupt_the_total():
+    # Callers may hand back the same array each time, as OpenCV does with its
+    # decode buffers. The total is updated when a frame is added, so without a
+    # defensive copy a later mutation would subtract values that were never
+    # added and break the average permanently.
+    background = RollingBackground(2)
+    buffer = np.full((4, 4), 10, np.uint8)
+
+    background.add(buffer)
+    buffer[:] = 200
+    background.add(buffer)
+    background.add(np.full((4, 4), 30, np.uint8))
+
+    expected = np.stack(
+        [np.full((4, 4), 200, np.uint8), np.full((4, 4), 30, np.uint8)]
+    ).mean(axis=0)
+    assert np.array_equal(background.average, expected.astype(np.uint8))
+
+
+def test_frames_of_a_different_shape_are_rejected():
+    background = RollingBackground(3)
+    background.add(np.zeros((4, 4), np.uint8))
+
+    with pytest.raises(ValueError, match="must match"):
+        background.add(np.zeros((5, 5), np.uint8))
+
+
+def test_a_window_of_one_holds_only_the_latest_frame():
+    background = RollingBackground(1)
+    background.add(np.full((3, 3), 10, np.uint8))
+    background.add(np.full((3, 3), 250, np.uint8))
+
+    assert background.average.mean() == pytest.approx(250)
+
+
 def test_still_footage_scores_no_motion():
     scores = list(motion_scores([frame(50) for _ in range(10)]))
 

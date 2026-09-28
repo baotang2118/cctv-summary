@@ -158,10 +158,27 @@ magnitude.
 **Frame counts from `probe()` are estimates** for some containers, so the real count can
 overshoot. Anything displaying `current/total` must clamp, or it shows `1200/1120`.
 
-**Where the time goes.** Profiled on a 1120-frame 720p clip: `RollingBackground.average`
-**60%**, decode 22%, resize+greyscale 16%, `change_score` 1%. The dominant cost is
-re-stacking the whole window every frame; an incremental running sum benchmarked **38x**
-faster on that stage (~2.4x overall). Not applied yet — the user chose to defer it.
+**Where the time goes.** Profiled on a 1120-frame 720p clip, decode **54%**,
+`downscale_to_gray` **37%**, rolling background **7%**, `change_score` **1%** — 5.0s
+total. Decode is now the floor; the remaining pixel work is small.
+
+`RollingBackground` used to dominate at **60%** (18.1s total) because `average` re-stacked
+and re-averaged the whole window every frame. It now keeps a running total, adding the
+incoming frame and subtracting the evicted one, which made the whole pipeline **3.6x**
+faster. The cost is **O(1) in `window`** rather than O(window), so raising `--window` is
+now nearly free — measured flat from 10 to 240 frames. Do not "simplify" it back into a
+recompute.
+
+Two things that implementation depends on, both tested:
+
+- **Frames are copied on the way in.** The total is updated at `add()` time, so a caller
+  reusing a buffer (as OpenCV does when decoding) would otherwise cause the eventual
+  subtraction to remove values that were never added, corrupting the total permanently
+  rather than skewing a single frame.
+- **float64 makes the running total exact.** Every integer below 2**53 is exactly
+  representable and a window of pixels sums to at most `window * 255`, so add/subtract
+  never rounds and the total cannot drift. This would not hold for float32.
+
 GPU is not the answer here: the PyPI wheel has no CUDA (`cv2.cuda` reports 0 devices),
 and OpenCL `UMat` measured *slower* than NumPy (513 vs 630 fps) because the transfer
 costs more than the tiny 320x180 operations save.

@@ -215,7 +215,7 @@ silently discard every event — at `0.05` that same clip returned a single fram
   background and the event closes. With the default `--window 30` (3 seconds of memory at
   10fps) a motionless figure stops registering after about 2.4 seconds; at `--window 120`
   they kept registering indefinitely in the same test. Raise `--window` so the background
-  takes longer to absorb them.
+  takes longer to absorb them — it costs no extra time, however large you make it.
 
 Motion here is raw pixel change, with no idea what a person is — rain, headlights and a
 swaying branch all count. Expect to tune per camera rather than globally.
@@ -269,9 +269,8 @@ These are possible directions, not committed features. Roughly in priority order
 8. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
    blur, or an unexpectedly dark image.
 
-Potential performance work includes maintaining a running background sum instead of
-rebuilding the rolling average for every frame, and walking the ordered event list with
-a cursor rather than checking every event against every decoded frame.
+Potential performance work includes walking the ordered event list with a cursor rather
+than checking every event against every decoded frame.
 
 ## Status
 

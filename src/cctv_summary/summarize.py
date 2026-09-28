@@ -101,8 +101,15 @@ def change_score(
 class RollingBackground:
     """Mean of the most recent ``size`` greyscale frames.
 
-    Frames accumulate as float so repeated averaging does not drift the way
-    uint8 rounding would.
+    The mean is maintained incrementally: each new frame is added to a running
+    total and the one falling out of the window is subtracted, so producing an
+    average costs the same no matter how large the window is. Rebuilding it
+    from the whole window every frame made this the slowest part of
+    summarizing by a wide margin.
+
+    The total is kept as float64, which represents every integer below 2**53
+    exactly. A window of pixel values cannot sum anywhere near that, so the
+    running total stays exact and never drifts.
     """
 
     def __init__(self, size: int = DEFAULT_WINDOW) -> None:
@@ -110,6 +117,7 @@ class RollingBackground:
             raise ValueError(f"Window size must be at least 1, got {size}")
         self.size = size
         self._frames: deque[np.ndarray] = deque(maxlen=size)
+        self._total: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self._frames)
@@ -122,14 +130,29 @@ class RollingBackground:
     @property
     def average(self) -> np.ndarray | None:
         """Mean frame, or ``None`` while the window is still empty."""
-        if not self._frames:
+        if self._total is None:
             return None
-        stacked = np.stack(self._frames).astype(np.float64)
-        return stacked.mean(axis=0).astype(np.uint8)
+        return (self._total / len(self._frames)).astype(np.uint8)
 
     def add(self, frame: np.ndarray) -> None:
         """Append a greyscale frame, evicting the oldest once full."""
-        self._frames.append(frame)
+        if self._total is None:
+            self._total = np.zeros(frame.shape, dtype=np.float64)
+        elif frame.shape != self._total.shape:
+            raise ValueError(
+                f"Frames must match to be averaged, got {frame.shape} and "
+                f"{self._total.shape}"
+            )
+
+        if len(self._frames) == self.size:
+            self._total -= self._frames[0]
+
+        # Stored as a copy because the total is updated now rather than when
+        # the average is read. A caller reusing its buffer would otherwise
+        # make the eventual subtraction remove different values than were
+        # added, corrupting the total permanently.
+        self._frames.append(frame.copy())
+        self._total += self._frames[-1]
 
 
 @dataclass(frozen=True)
