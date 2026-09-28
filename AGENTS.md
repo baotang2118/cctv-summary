@@ -78,6 +78,7 @@ src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError,
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
 src/cctv_summary/summarize.py  motion scoring, event detection, summarize_video
 src/cctv_summary/progress.py   Progress protocol, TerminalProgress, NullProgress
+scripts/record-camera.sh       Linux cron helper: locked 20-minute VLC recordings
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
 tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest

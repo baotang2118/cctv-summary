@@ -61,6 +61,24 @@ drawn. They report progress instead, since nothing else shows the run is alive:
 decoding  [###########---------]  56% 626/1120 1s left
 ```
 
+## Record a LAN camera
+
+On Linux, [`scripts/record-camera.sh`](./scripts/record-camera.sh) records a 20-minute
+MPEG-TS clip from an RTSP or other VLC-compatible camera URL. It requires `flock`,
+`timeout`, and `cvlc`. The lock is blocking, so an overlapping cron invocation waits for
+the active recording to finish instead of starting a second VLC process.
+
+Run it every 20 minutes with:
+
+```cron
+*/20 * * * * /usr/bin/env bash /path/to/cctv-summary/scripts/record-camera.sh 'rtsp://camera/stream' '/path/to/recordings'
+```
+
+The output directory defaults to `$HOME/cctv-recordings`. `CAMERA_URL`, `OUTPUT_DIR`,
+and `LOCK_FILE` can also be supplied as environment variables. At the time limit,
+`timeout` first sends `SIGINT` so VLC can close the output cleanly, then forces it to
+stop after a 30-second grace period if necessary.
+
 ## Summarize
 
 Find the stretches where something moves and write them out as continuous clips,
@@ -229,6 +247,7 @@ uv run ruff format .
 
 ```
 src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py)
+scripts/            Linux camera recording and cron helpers
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
 AGENTS.md           working notes for agents and contributors
