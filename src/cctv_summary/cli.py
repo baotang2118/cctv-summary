@@ -6,8 +6,10 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TextIO
 
 from cctv_summary import __version__
+from cctv_summary.progress import NullProgress, Progress, TerminalProgress
 from cctv_summary.summarize import (
     DEFAULT_MIN_EVENT_SECONDS,
     DEFAULT_PAD_SECONDS,
@@ -42,6 +44,16 @@ def _timestamp(seconds: float) -> str:
     return f"{whole // 3600:02d}:{(whole % 3600) // 60:02d}:{whole % 60:02d}"
 
 
+def _progress_for(stream: TextIO) -> Progress:
+    """Report progress only to a real terminal.
+
+    Redirected or piped output would otherwise fill with carriage returns.
+    """
+    if hasattr(stream, "isatty") and stream.isatty():
+        return TerminalProgress(stream)
+    return NullProgress()
+
+
 def _handle_summarize(args: argparse.Namespace) -> int:
     if args.destination is None and not args.dry_run:
         print(
@@ -59,6 +71,7 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         tolerance=args.tolerance,
         pad_seconds=args.pad,
         min_event_seconds=args.min_event,
+        progress=_progress_for(sys.stderr),
     )
 
     print(f"source:   {stats.total} frames, {_timestamp(stats.source_seconds)}")

@@ -37,9 +37,9 @@ Non-negotiable. Apply these to **every** code change, however small.
 with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play` shows a
 file in a window (badging the corner when `--speed` is above 1) or decodes headless
 (`--headless`); `cctv-summary summarize` finds the stretches where something moves and
-writes them out as continuous clips, listing their timestamps and burning a scissors mark
-into every output frame. Motion is raw pixel change — there is no object or person
-detection, so a swaying tree counts as an event.
+writes them out as continuous clips, reporting progress as it goes, listing their
+timestamps and burning a scissors mark into every output frame. Motion is raw pixel
+change — there is no object or person detection, so a swaying tree counts as an event.
 
 ## Toolchain
 
@@ -76,8 +76,9 @@ src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand ha
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
 src/cctv_summary/summarize.py  motion scoring, event detection, summarize_video
+src/cctv_summary/progress.py   Progress protocol, TerminalProgress, NullProgress
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli/_video/_overlay/_summarize.py)
+tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
@@ -152,6 +153,17 @@ same clip lost every event and returned a single frame. A distant figure covers 
 little of the frame, so thresholds in the tenths are wrong for CCTV by an order of
 magnitude.
 
+**Frame counts from `probe()` are estimates** for some containers, so the real count can
+overshoot. Anything displaying `current/total` must clamp, or it shows `1200/1120`.
+
+**Where the time goes.** Profiled on a 1120-frame 720p clip: `RollingBackground.average`
+**60%**, decode 22%, resize+greyscale 16%, `change_score` 1%. The dominant cost is
+re-stacking the whole window every frame; an incremental running sum benchmarked **38x**
+faster on that stage (~2.4x overall). Not applied yet — the user chose to defer it.
+GPU is not the answer here: the PyPI wheel has no CUDA (`cv2.cuda` reports 0 devices),
+and OpenCL `UMat` measured *slower* than NumPy (513 vs 630 fps) because the transfer
+costs more than the tiny 320x180 operations save.
+
 ## Conventions
 
 - **CLI shape.** Argument wiring lives in `build_parser()`; each subcommand registers its
@@ -187,8 +199,13 @@ magnitude.
 - **Inset the plate, not the glyph.** `_badge_box()` positions the *plate* inside the
   margin; insetting the glyph instead lets the plate bleed off the frame edge. The margin
   also shrinks on small frames, or a fixed inset drags the badge toward the middle.
-- **Keep GUI out of logic.** Playback writes to the `Display` protocol
-  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
+- **Progress goes to stderr, and only to a terminal.** `summarize_video()` takes a
+  `progress=` reporter and stays silent without one, mirroring the `Display` pattern —
+  logic never touches the terminal. `cli._progress_for()` picks `TerminalProgress` or
+  `NullProgress` by `isatty()`, so redirected output and CI logs stay free of carriage
+  returns, and `> file` still captures a clean report. Draws are throttled to ~10/sec;
+  redrawing per frame costs more than the work being measured.
+- **Keep GUI out of logic.** Playback writes to the `Display` protocol  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept
   an injectable display so it stays testable. `play(..., display=...)` overrides
   `headless=`.

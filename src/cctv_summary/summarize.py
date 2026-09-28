@@ -18,6 +18,7 @@ import numpy as np
 from cv2.typing import MatLike
 
 from cctv_summary.overlay import draw_summarized
+from cctv_summary.progress import NullProgress, Progress
 from cctv_summary.video import (
     FALLBACK_FPS,
     VideoError,
@@ -303,11 +304,13 @@ def summarize_video(
     tolerance: int = DEFAULT_TOLERANCE,
     pad_seconds: float = DEFAULT_PAD_SECONDS,
     min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+    progress: Progress | None = None,
 ) -> SummaryStats:
     """Write a copy of ``source`` containing only its motion events.
 
     With ``destination=None`` the footage is analysed but nothing is written,
-    which is what ``--dry-run`` uses.
+    which is what ``--dry-run`` uses. Pass a ``progress`` reporter to follow
+    long runs; without one the call stays silent.
 
     The source is decoded twice: once to score motion, once to write. Padding
     reaches backwards from the moment motion is noticed, and buffering an hour
@@ -328,10 +331,15 @@ def summarize_video(
 
     info = probe(source)
     fps = info.fps if info.fps > 0 else FALLBACK_FPS
+    reporter = progress if progress is not None else NullProgress()
 
-    scores = list(
-        motion_scores(iter_frames(source), window=window, tolerance=tolerance)
-    )
+    reporter.start("analysing", info.frame_count)
+    scores = []
+    for score in motion_scores(iter_frames(source), window=window, tolerance=tolerance):
+        scores.append(score)
+        reporter.advance()
+    reporter.finish()
+
     events = detect_events(
         scores,
         fps=fps,
@@ -344,13 +352,22 @@ def summarize_video(
     kept = sum(event.frames for event in events)
 
     if destination is not None and kept:
+        reporter.start("writing", kept)
         write_frames(
             destination,
-            _event_frames(source, events),
+            _reporting(_event_frames(source, events), reporter),
             fps=fps,
         )
+        reporter.finish()
 
     return SummaryStats(total=total, kept=kept, fps=fps, events=tuple(events))
+
+
+def _reporting(frames: Iterable[MatLike], reporter: Progress) -> Iterator[MatLike]:
+    """Count frames as the consumer pulls them, so progress tracks real work."""
+    for frame in frames:
+        yield frame
+        reporter.advance()
 
 
 def _event_frames(source: str | Path, events: Sequence[Event]) -> Iterator[MatLike]:

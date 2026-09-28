@@ -394,3 +394,71 @@ def test_summarize_reports_a_missing_output_directory(sample_video, tmp_path):
             threshold=0.001,
             min_event_seconds=0,
         )
+
+
+class RecordingProgress:
+    """Captures the calls summarize_video makes, without any terminal."""
+
+    def __init__(self) -> None:
+        self.stages: list[tuple[str, int]] = []
+        self.advances = 0
+        self.finished = 0
+
+    def start(self, label: str, total: int) -> None:
+        self.stages.append((label, total))
+
+    def advance(self, amount: int = 1) -> None:
+        self.advances += amount
+
+    def finish(self) -> None:
+        self.finished += 1
+
+
+def test_progress_is_reported_while_analysing(sample_video):
+    progress = RecordingProgress()
+
+    summarize_video(sample_video.path, threshold=0.5, progress=progress)
+
+    assert progress.stages[0][0] == "analysing"
+    assert progress.advances == sample_video.frames
+    assert progress.finished == 1
+
+
+def test_progress_covers_both_passes(sample_video, tmp_path):
+    progress = RecordingProgress()
+
+    stats = summarize_video(
+        sample_video.path,
+        tmp_path / "out.avi",
+        threshold=0.001,
+        min_event_seconds=0,
+        progress=progress,
+    )
+
+    labels = [stage for stage, _ in progress.stages]
+    assert labels == ["analysing", "writing"]
+    # Every analysed frame plus every written frame.
+    assert progress.advances == stats.total + stats.kept
+    assert progress.finished == 2
+
+
+def test_the_writing_pass_is_sized_by_kept_frames(sample_video, tmp_path):
+    progress = RecordingProgress()
+
+    stats = summarize_video(
+        sample_video.path,
+        tmp_path / "out.avi",
+        threshold=0.001,
+        min_event_seconds=0,
+        progress=progress,
+    )
+
+    assert dict(progress.stages)["writing"] == stats.kept
+
+
+def test_summarize_stays_silent_without_a_reporter(sample_video, capsys):
+    summarize_video(sample_video.path, threshold=0.5)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

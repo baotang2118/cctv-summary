@@ -85,6 +85,25 @@ See what would be kept without writing anything:
 uv run cctv-summary summarize clip.mp4 --dry-run
 ```
 
+### Progress
+
+Long recordings take a while, so both passes report progress on stderr:
+
+```
+analysing [#########-----------]  45% 505/1120 5s left
+writing   [##############------]  68% 569/834 2s left
+```
+
+The line rewrites itself in place and disappears when the run finishes. Because it goes
+to stderr, redirecting the report still gives you a clean file:
+
+```bash
+uv run cctv-summary summarize clip.mp4 summary.mp4 > events.txt
+```
+
+Progress is drawn only when stderr is a terminal, so pipes, logs, and CI output are not
+filled with carriage returns. Redirect stderr to silence it entirely.
+
 Every frame of the output carries a scissors mark (`✂`) in the top-right corner, so a
 summary is recognisable as one even after being renamed, copied, or shared. The mark is
 burned into the pixels — there is no way to strip it from an existing summary, so keep
@@ -208,6 +227,26 @@ tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
 AGENTS.md           working notes for agents and contributors
 ```
+
+## Ideas
+
+These are possible directions, not committed features. Roughly in priority order:
+
+1. Export a JSON or CSV event manifest for scripts and integrations.
+2. Generate an HTML contact sheet with one thumbnail and the original timestamp for
+   each event.
+3. Support regions of interest and exclusion masks to ignore roads, trees, timestamps,
+   and other noisy parts of a camera view.
+4. Optionally write each event as a separate, timestamped clip.
+5. Burn the original source timestamp into summarized frames.
+6. Recommend a motion threshold by sampling the video's quiet baseline.
+7. Generate motion heatmaps that show frequently active parts of the scene.
+8. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
+   blur, or an unexpectedly dark image.
+
+Potential performance work includes maintaining a running background sum instead of
+rebuilding the rolling average for every frame, and walking the ordered event list with
+a cursor rather than checking every event against every decoded frame.
 
 ## Status
 

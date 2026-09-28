@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from cctv_summary import __version__
-from cctv_summary.cli import main
+from cctv_summary.cli import _progress_for, main
+from cctv_summary.progress import NullProgress, TerminalProgress
 from cctv_summary.video import VideoError
 
 
@@ -175,3 +176,32 @@ def test_summarize_writes_a_file(sample_video, tmp_path, capsys):
 def test_summarize_surfaces_video_errors(tmp_path, capsys):
     assert main(["summarize", str(tmp_path / "nope.avi"), "--dry-run"]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+class FakeStream:
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def test_a_terminal_gets_a_progress_reporter():
+    assert isinstance(_progress_for(FakeStream(tty=True)), TerminalProgress)
+
+
+def test_redirected_output_gets_no_progress():
+    # Carriage returns would otherwise fill a log file or pipe.
+    assert isinstance(_progress_for(FakeStream(tty=False)), NullProgress)
+
+
+def test_streams_without_isatty_get_no_progress():
+    assert isinstance(_progress_for(object()), NullProgress)
+
+
+def test_summarize_keeps_progress_off_stdout(sample_video, capsys):
+    main(["summarize", str(sample_video.path), "--dry-run"])
+
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    assert "analysing" not in out
