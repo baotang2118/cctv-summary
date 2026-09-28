@@ -55,7 +55,11 @@ uv run cctv-summary play path/to/clip.mp4 --headless
 ```
 
 Headless runs decode as fast as the file allows and ignore `--speed`, so no badge is
-drawn.
+drawn. They report progress instead, since nothing else shows the run is alive:
+
+```
+decoding  [###########---------]  56% 626/1120 1s left
+```
 
 ## Summarize
 
@@ -102,7 +106,9 @@ uv run cctv-summary summarize clip.mp4 summary.mp4 > events.txt
 ```
 
 Progress is drawn only when stderr is a terminal, so pipes, logs, and CI output are not
-filled with carriage returns. Redirect stderr to silence it entirely.
+filled with carriage returns. Redirect stderr to silence it entirely. `play --headless`
+reports the same way; windowed playback does not, since the window already shows it is
+running.
 
 Every frame of the output carries a scissors mark (`✂`) in the top-right corner, so a
 summary is recognisable as one even after being renamed, copied, or shared. The mark is

@@ -226,3 +226,60 @@ def test_null_display_ignores_frames_and_closes_cleanly(sample_video):
 
     display.show(next(iter_frames(sample_video.path)))
     display.close()
+
+
+class RecordingProgress:
+    """Captures reporter calls without touching a terminal."""
+
+    def __init__(self) -> None:
+        self.stages: list[tuple[str, int]] = []
+        self.advances = 0
+        self.finished = 0
+
+    def start(self, label: str, total: int) -> None:
+        self.stages.append((label, total))
+
+    def advance(self, amount: int = 1) -> None:
+        self.advances += amount
+
+    def finish(self) -> None:
+        self.finished += 1
+
+
+def test_headless_playback_reports_progress(sample_video):
+    progress = RecordingProgress()
+
+    play(sample_video.path, headless=True, progress=progress)
+
+    assert progress.stages == [("decoding", sample_video.frames)]
+    assert progress.advances == sample_video.frames
+    assert progress.finished == 1
+
+
+def test_play_stays_silent_without_a_reporter(sample_video, capsys):
+    play(sample_video.path, headless=True)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_progress_is_finished_even_when_quitting_early(sample_video):
+    # Otherwise the half-drawn line is left on the terminal.
+    progress = RecordingProgress()
+
+    play(sample_video.path, display=FakeDisplay(quit_after=2), progress=progress)
+
+    assert progress.finished == 1
+
+
+def test_a_failure_before_decoding_leaves_no_progress_line(tmp_path):
+    # probe() rejects the file before anything is drawn, so there is nothing
+    # to clear up. What matters is that start and finish stay balanced.
+    progress = RecordingProgress()
+
+    with pytest.raises(VideoError):
+        play(tmp_path / "nope.avi", headless=True, progress=progress)
+
+    assert progress.stages == []
+    assert progress.finished == len(progress.stages)

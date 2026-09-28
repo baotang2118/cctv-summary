@@ -12,6 +12,7 @@ import cv2
 from cv2.typing import MatLike
 
 from cctv_summary.overlay import draw_fast_forward
+from cctv_summary.progress import NullProgress, Progress
 
 DEFAULT_WINDOW_NAME = "cctv-summary"
 
@@ -212,6 +213,7 @@ def play(
     speed: float = 1.0,
     headless: bool = False,
     display: Display | None = None,
+    progress: Progress | None = None,
 ) -> int:
     """Play ``path`` frame by frame and return how many frames were shown.
 
@@ -220,6 +222,10 @@ def play(
     frames are decoded without a window and as fast as possible, so ``speed``
     and the badge have no effect. Playback stops early when the viewer presses
     ``q`` or Escape. An explicit ``display`` overrides ``headless``.
+
+    Pass a ``progress`` reporter to follow a headless run, which otherwise
+    shows nothing at all until it finishes. Windowed playback is its own
+    progress indicator, so callers should not report there.
     """
     if speed <= 0:
         raise VideoError(f"Playback speed must be greater than zero, got {speed}")
@@ -235,15 +241,19 @@ def play(
         surface = WindowDisplay()
 
     badge_speed = speed > 1.0 and not headless
+    reporter = progress if progress is not None else NullProgress()
 
     shown = 0
     try:
+        reporter.start("decoding", info.frame_count)
         for frame in iter_frames(path):
             surface.show(draw_fast_forward(frame, speed) if badge_speed else frame)
             shown += 1
+            reporter.advance()
             if surface.wait(delay_ms) in QUIT_KEYS:
                 break
     finally:
+        reporter.finish()
         surface.close()
 
     return shown

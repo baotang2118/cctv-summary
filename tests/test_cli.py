@@ -205,3 +205,31 @@ def test_summarize_keeps_progress_off_stdout(sample_video, capsys):
     out = capsys.readouterr().out
     assert "\r" not in out
     assert "analysing" not in out
+
+
+def test_headless_play_gets_progress(sample_video, monkeypatch):
+    captured = {}
+
+    def fake_play(video, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("cctv_summary.cli.play", fake_play)
+    main(["play", str(sample_video.path), "--headless"])
+
+    assert captured["progress"] is not None
+
+
+def test_windowed_play_gets_no_progress(sample_video, monkeypatch):
+    # The window itself shows the run is alive; a progress line would only
+    # compete with it.
+    captured = {}
+
+    def fake_play(video, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("cctv_summary.cli.play", fake_play)
+    main(["play", str(sample_video.path)])
+
+    assert captured["progress"] is None

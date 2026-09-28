@@ -36,7 +36,8 @@ Non-negotiable. Apply these to **every** code change, however small.
 **Status: video I/O and motion-event summarization work.** The app reads and plays video
 with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play` shows a
 file in a window (badging the corner when `--speed` is above 1) or decodes headless
-(`--headless`); `cctv-summary summarize` finds the stretches where something moves and
+(`--headless`, which reports progress since nothing else shows it is alive);
+`cctv-summary summarize` finds the stretches where something moves and
 writes them out as continuous clips, reporting progress as it goes, listing their
 timestamps and burning a scissors mark into every output frame. Motion is raw pixel
 change — there is no object or person detection, so a swaying tree counts as an event.
@@ -58,8 +59,8 @@ uv run cctv-summary --help     # console script entry point
 uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
 uv run cctv-summary play FILE --speed 4    # faster, badges the top-right corner
-uv run cctv-summary play FILE --headless   # no window, decode as fast as possible
-uv run cctv-summary summarize SRC DST      # shorter copy, changed frames only
+uv run cctv-summary play FILE --headless   # no window, progress on stderr
+uv run cctv-summary summarize SRC DST      # motion events only, progress on stderr
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
 uv run python -m cctv_summary  # module entry point
 ```
@@ -199,12 +200,14 @@ costs more than the tiny 320x180 operations save.
 - **Inset the plate, not the glyph.** `_badge_box()` positions the *plate* inside the
   margin; insetting the glyph instead lets the plate bleed off the frame edge. The margin
   also shrinks on small frames, or a fixed inset drags the badge toward the middle.
-- **Progress goes to stderr, and only to a terminal.** `summarize_video()` takes a
-  `progress=` reporter and stays silent without one, mirroring the `Display` pattern —
-  logic never touches the terminal. `cli._progress_for()` picks `TerminalProgress` or
-  `NullProgress` by `isatty()`, so redirected output and CI logs stay free of carriage
-  returns, and `> file` still captures a clean report. Draws are throttled to ~10/sec;
-  redrawing per frame costs more than the work being measured.
+- **Progress goes to stderr, and only to a terminal.** `summarize_video()` and `play()`
+  take a `progress=` reporter and stay silent without one, mirroring the `Display`
+  pattern — logic never touches the terminal. `cli._progress_for()` picks
+  `TerminalProgress` or `NullProgress` by `isatty()`, so redirected output and CI logs
+  stay free of carriage returns, and `> file` still captures a clean report. Draws are
+  throttled to ~10/sec; redrawing per frame costs more than the work being measured.
+  **Windowed playback is deliberately unreported** — the window is its own sign of life,
+  so the CLI passes a reporter only for `--headless`.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept
   an injectable display so it stays testable. `play(..., display=...)` overrides

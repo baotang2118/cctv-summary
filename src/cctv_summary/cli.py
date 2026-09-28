@@ -32,7 +32,13 @@ def _handle_info(args: argparse.Namespace) -> int:
 
 
 def _handle_play(args: argparse.Namespace) -> int:
-    shown = play(args.video, speed=args.speed, headless=args.headless)
+    shown = play(
+        args.video,
+        speed=args.speed,
+        headless=args.headless,
+        # A window is its own sign of life; a headless run shows nothing.
+        progress=_progress_for(sys.stderr) if args.headless else None,
+    )
     verb = "Processed" if args.headless else "Displayed"
     print(f"{verb} {shown} frame(s) from {args.video}")
     return 0
