@@ -277,6 +277,15 @@ than checking every event against every decoded frame.
 Reading, playing, and motion-event summarization work. Motion is raw pixel change —
 there is no object or person detection, scene segmentation, or text summary yet.
 
+## License
+
+Copyright (C) 2026 Bao.TangDuc.
+
+This project is licensed under the [GNU General Public License, version 3
+only](./LICENSE). Commercial use is permitted under the GPL; when distributing
+covered modified versions, you must follow its source-sharing terms. Private
+internal use does not require publishing modifications.
+
 ## Agent notes
 
 [AGENTS.md](./AGENTS.md) holds the shared working notes for AI agents and new

@@ -82,6 +82,7 @@ scripts/record-camera.sh       Linux cron helper: locked 20-minute VLC recording
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
 tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
+LICENSE                        GNU GPL version 3 (GPL-3.0-only)
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
 ```
 
