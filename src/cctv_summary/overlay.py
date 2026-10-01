@@ -9,26 +9,26 @@ import numpy as np
 from cv2.typing import MatLike
 
 # OpenCV uses BGR, so this is white.
-DEFAULT_COLOR = (255, 255, 255)
+DEFAULT_COLOR: tuple[int, int, int] = (255, 255, 255)
 
 # How strongly the backing plate darkens the footage behind the badge.
-PLATE_OPACITY = 0.55
+PLATE_OPACITY: float = 0.55
 
-MARGIN = 12
+MARGIN: int = 12
 
 # Chevron height as a fraction of the frame's shorter edge, so the marker
 # stays readable at any resolution.
-SIZE_RATIO = 0.06
+SIZE_RATIO: float = 0.06
 
-MIN_CHEVRON_HEIGHT = 8
+MIN_CHEVRON_HEIGHT: int = 8
 
-FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT: int = cv2.FONT_HERSHEY_SIMPLEX
 
 # Badges stack downward from the top-right corner. The summary mark is burned
 # into the file and the speed mark is drawn during playback, so each needs a
 # reserved row to avoid overlapping the other.
-SUMMARY_SLOT = 0
-SPEED_SLOT = 1
+SUMMARY_SLOT: int = 0
+SPEED_SLOT: int = 1
 
 
 def chevron_height(width: int, height: int) -> int:

@@ -30,30 +30,30 @@ from cctv_summary.video import (
 # Fraction of pixels that must move for a frame to count as motion. A person
 # crossing a corridor covers only about 1% of the frame, so this sits an order
 # of magnitude below what frame-to-frame differencing might suggest.
-DEFAULT_THRESHOLD = 0.01
+DEFAULT_THRESHOLD: float = 0.01
 
 # An event ends only once motion falls below this share of the start threshold,
 # which stops a walker pausing mid-frame from splitting one event into three.
-STOP_RATIO = 0.5
+STOP_RATIO: float = 0.5
 
-DEFAULT_WINDOW = 30
+DEFAULT_WINDOW: int = 30
 
 # Per-pixel intensity delta (0-255) that counts as "this pixel moved".
-DEFAULT_TOLERANCE = 25
+DEFAULT_TOLERANCE: int = 25
 
 # Seconds of footage kept either side of an event, so people are seen entering
 # and leaving rather than appearing mid-stride.
-DEFAULT_PAD_SECONDS = 2.0
+DEFAULT_PAD_SECONDS: float = 2.0
 
 # Events shorter than this are treated as noise rather than something happening.
-DEFAULT_MIN_EVENT_SECONDS = 1.0
+DEFAULT_MIN_EVENT_SECONDS: float = 1.0
 
 # How long motion must stay low before an event is considered over.
-DEFAULT_COOLDOWN_SECONDS = 1.0
+DEFAULT_COOLDOWN_SECONDS: float = 1.0
 
 # Frames are compared at this long-edge size: full-resolution diffs are wasteful
 # and noisier without changing the decision much.
-COMPARISON_EDGE = 320
+COMPARISON_EDGE: int = 320
 
 
 def downscale_to_gray(frame: MatLike) -> np.ndarray:

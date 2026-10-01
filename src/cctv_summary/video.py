@@ -14,15 +14,15 @@ from cv2.typing import MatLike
 from cctv_summary.overlay import draw_fast_forward
 from cctv_summary.progress import NullProgress, Progress
 
-DEFAULT_WINDOW_NAME = "cctv-summary"
+DEFAULT_WINDOW_NAME: str = "cctv-summary"
 
 # Used when a container reports no usable frame rate, so playback still has a pace.
-FALLBACK_FPS = 25.0
+FALLBACK_FPS: float = 25.0
 
-QUIT_KEYS = frozenset({ord("q"), ord("Q"), 27})
+QUIT_KEYS: frozenset[int] = frozenset({ord("q"), ord("Q"), 27})
 
 # What `cv2.waitKey(...) & 0xFF` yields when no key was pressed.
-NO_KEY = 255
+NO_KEY: int = 255
 
 
 class VideoError(RuntimeError):

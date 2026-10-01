@@ -12,14 +12,14 @@ import sys
 import time
 from typing import Protocol, TextIO
 
-BAR_WIDTH = 20
+BAR_WIDTH: int = 20
 
 # Redraw at most this often. Writing on every frame costs more than the work
 # being measured on small clips.
-REDRAW_SECONDS = 0.1
+REDRAW_SECONDS: float = 0.1
 
 # Widest stage label, so the bar does not jump when the label changes.
-LABEL_WIDTH = 9
+LABEL_WIDTH: int = 9
 
 
 def format_duration(seconds: float) -> str:

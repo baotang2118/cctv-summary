@@ -99,7 +99,7 @@ wrote:    summary.mp4
 ```
 
 The timestamps refer to the **original** recording, so the listing doubles as an index of
-when things happened — useful when the source is an hour long.
+when things happened - useful when the source is an hour long.
 
 See what would be kept without writing anything:
 
@@ -130,7 +130,7 @@ running.
 
 Every frame of the output carries a scissors mark (`✂`) in the top-right corner, so a
 summary is recognisable as one even after being renamed, copied, or shared. The mark is
-burned into the pixels — there is no way to strip it from an existing summary, so keep
+burned into the pixels - there is no way to strip it from an existing summary, so keep
 the original if you need unmarked footage. Playing a summary with `--speed` above 1
 stacks the fast-forward badge beneath the scissors rather than on top of it.
 
@@ -145,7 +145,7 @@ stop**.
 This is the part that makes everything else work. Comparing consecutive frames measures
 how *fast* something is moving, so a person walking slowly barely differs from the frame
 before and disappears. Instead each frame is compared against a rolling average of the
-last `--window` frames — effectively "what this scene looks like when nothing is
+last `--window` frames - effectively "what this scene looks like when nothing is
 happening". A person is then different from an empty corridor for as long as they are in
 shot, however slowly they move.
 
@@ -165,7 +165,7 @@ appearing mid-stride. Two events close together become one continuous clip inste
 with a jarring cut between them.
 
 Here is one person walking through, pausing halfway, alongside a 2-frame flicker of
-camera noise — and what each stage keeps (`#` = motion detected, `K` = frame kept):
+camera noise - and what each stage keeps (`#` = motion detected, `K` = frame kept):
 
 ```
 raw >= threshold  ..............#####...####............##............
@@ -177,7 +177,7 @@ raw >= threshold  ..............#####...####............##............
 ```
 
 Row 1 is what a naive threshold gives you: the walker is torn into three fragments and
-the noise is kept. Each stage then fixes one failure — the cooldown bridges the pause,
+the noise is kept. Each stage then fixes one failure - the cooldown bridges the pause,
 `--min-event` discards the flicker, and `--pad` restores the lead-in and lead-out.
 
 Note that `--min-event` is applied *before* `--pad`. That ordering matters: padding a
@@ -203,7 +203,7 @@ Start with `--dry-run` and adjust `--threshold` alone; it is by far the most sen
 **A distant person covers only about 1% of the frame.** On a 640x360 corridor clip a
 walking figure scored `0.010`, peaking at `0.027`, while the empty corridor scored
 `0.0000`. Thresholds in the tenths are an order of magnitude too high for CCTV and will
-silently discard every event — at `0.05` that same clip returned a single frame.
+silently discard every event - at `0.05` that same clip returned a single frame.
 
 - **Missing events?** Lower `--threshold` (try `0.005`), or lower `--tolerance` if people
   blend into the background.
@@ -215,14 +215,14 @@ silently discard every event — at `0.05` that same clip returned a single fram
   background and the event closes. With the default `--window 30` (3 seconds of memory at
   10fps) a motionless figure stops registering after about 2.4 seconds; at `--window 120`
   they kept registering indefinitely in the same test. Raise `--window` so the background
-  takes longer to absorb them — it costs no extra time, however large you make it.
+  takes longer to absorb them - it costs no extra time, however large you make it.
 
-Motion here is raw pixel change, with no idea what a person is — rain, headlights and a
+Motion here is raw pixel change, with no idea what a person is - rain, headlights and a
 swaying branch all count. Expect to tune per camera rather than globally.
 
 The source is decoded twice, once to measure motion and once to write, because padding
 has to reach back before the moment motion was noticed. Expect roughly double the time of
-a single pass. The output keeps the source frame rate, and **audio is not preserved** —
+a single pass. The output keeps the source frame rate, and **audio is not preserved** -
 OpenCV does not carry audio.
 
 ```bash
@@ -274,7 +274,7 @@ than checking every event against every decoded frame.
 
 ## Status
 
-Reading, playing, and motion-event summarization work. Motion is raw pixel change —
+Reading, playing, and motion-event summarization work. Motion is raw pixel change -
 there is no object or person detection, scene segmentation, or text summary yet.
 
 ## License
