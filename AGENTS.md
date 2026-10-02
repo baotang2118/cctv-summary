@@ -62,6 +62,7 @@ uv run cctv-summary play FILE --speed 4    # faster, badges the top-right corner
 uv run cctv-summary play FILE --headless   # no window, progress on stderr
 uv run cctv-summary summarize SRC DST      # motion events only, progress on stderr
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
+uv run cctv-summary summarize SRC --target 10%  # solve --threshold for a keep share
 uv run cctv-summary summarize SRC DST --comparison-edge 640  # override the resolution tier
 uv run python -m cctv_summary  # module entry point
 ```
@@ -77,7 +78,7 @@ src/cctv_summary/__main__.py   enables `python -m cctv_summary`
 src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand handlers
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
-src/cctv_summary/summarize.py  motion scoring, event detection, summarize_video
+src/cctv_summary/summarize.py  motion scoring, event detection, threshold solver
 src/cctv_summary/progress.py   Progress protocol, TerminalProgress, NullProgress
 scripts/record-camera.sh       Linux cron helper: locked 20-minute VLC recordings
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
@@ -172,6 +173,24 @@ That is why `DEFAULT_THRESHOLD` is `0.01` and not something like `0.10` — at 0
 same clip lost every event and returned a single frame. A distant figure covers very
 little of the frame, so thresholds in the tenths are wrong for CCTV by an order of
 magnitude.
+
+**`--target` solves for a threshold; it does not infer one.** Deriving a threshold from
+the footage alone does not work: on a locked-off camera the median score and its MAD are
+both exactly `0.0`, so there is no baseline to scale. What *does* work is asking the user
+how much of the clip to keep and bisecting for it — keep-ratio falls monotonically as the
+threshold rises. The search is **geometric**, because useful thresholds span decades and
+linear steps waste every iteration in the wrong one.
+
+The solver runs on the scores pass one already produced, so `--target` costs no extra
+decoding. Measured on a 61-minute clip: a 10% target solved to `0.0492` and returned
+10.0% in 40 events.
+
+**Padding quantises what is reachable.** One shortest event is
+`(min_event + 2*pad) * fps` frames — 13% of a 37-second clip but 0.1% of an hour, so
+small targets are impossible on short clips. `solve_threshold()` clamps the goal up to
+that floor; without it the search drives the threshold past every event and returns an
+empty summary, which is worse than the smallest real one. The CLI explains the overshoot
+rather than silently missing the target.
 
 **Frame counts from `probe()` are estimates** for some containers, so the real count can
 overshoot. Anything displaying `current/total` must clamp, or it shows `1200/1120`.

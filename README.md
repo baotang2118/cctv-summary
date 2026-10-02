@@ -187,6 +187,7 @@ Note that `--min-event` is applied *before* `--pad`. That ordering matters: padd
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--threshold` | `0.01` | Fraction of pixels that must move to count as motion (0–1) |
+| `--target` | off | Solve `--threshold` to keep about this share, e.g. `10%` |
 | `--pad` | `2.0` | Seconds kept either side of an event |
 | `--min-event` | `1.0` | Ignore anything shorter than this, in seconds |
 | `--window` | `30` | Frames in the rolling background average |
@@ -196,6 +197,38 @@ Note that `--min-event` is applied *before* `--pad`. That ordering matters: padd
 `--threshold` and `--tolerance` are easy to confuse. `--tolerance` decides whether a
 single *pixel* changed enough to count as movement; `--threshold` decides whether *enough
 pixels* moved for the frame to count as motion.
+
+### Tuning it automatically
+
+Picking a threshold by hand means guessing, because the right value depends on the
+camera. `--target` inverts the problem: say how much of the recording you want back, and
+the threshold is solved for you.
+
+```bash
+uv run cctv-summary summarize clip.mp4 --dry-run --target 10%
+```
+
+```
+source:   109697 frames, 01:00:57
+auto:     --threshold 0.0492 for a 10% target
+events:   40
+summary:  11000 frames, 00:06:06 (10.0% of source)
+```
+
+This costs no extra decoding: the threshold is solved from the motion scores the first
+pass has already measured.
+
+**It cannot read your mind, only your goal.** A video has no opinion about how much of
+itself is worth watching, so `--target` supplies that judgement and the threshold
+follows. Without `--target`, `--threshold` is used exactly as given.
+
+Short clips cannot hit small targets. With the default padding the shortest event the
+detector can emit is five seconds, so on a 40-second clip nothing below about 13% is
+reachable. The run says so instead of silently returning the wrong amount:
+
+```
+note:     one shortest event is already 13% of this clip, so 5% is unreachable
+```
 
 Frames are shrunk before they are compared: full-resolution diffs are slow and noisier
 without changing the decision much. `auto` steps that size up with the source resolution.
@@ -282,9 +315,8 @@ These are possible directions, not committed features. Roughly in priority order
    and other noisy parts of a camera view.
 4. Optionally write each event as a separate, timestamped clip.
 5. Burn the original source timestamp into summarized frames.
-6. Recommend a motion threshold by sampling the video's quiet baseline.
-7. Generate motion heatmaps that show frequently active parts of the scene.
-8. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
+6. Generate motion heatmaps that show frequently active parts of the scene.
+7. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
    blur, or an unexpectedly dark image.
 
 Potential performance work includes walking the ordered event list with a cursor rather

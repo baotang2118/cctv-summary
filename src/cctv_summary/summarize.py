@@ -51,6 +51,13 @@ DEFAULT_MIN_EVENT_SECONDS: float = 1.0
 # How long motion must stay low before an event is considered over.
 DEFAULT_COOLDOWN_SECONDS: float = 1.0
 
+# Bounds and iteration count for the `--target` threshold search. The range
+# spans the useful thresholds for everything from a locked-off camera to
+# handheld footage; 18 geometric steps narrow that to well under a percent.
+SOLVER_MIN_THRESHOLD: float = 1e-4
+SOLVER_MAX_THRESHOLD: float = 0.5
+SOLVER_STEPS: int = 18
+
 # Frames are compared at a reduced long-edge size: full-resolution diffs are
 # wasteful and noisier without changing the decision much. One fixed size is
 # wrong across cameras, though. Scores are a *share* of pixels, so they barely
@@ -232,6 +239,10 @@ class SummaryStats:
     kept: int
     fps: float = 0.0
     events: tuple[Event, ...] = ()
+    threshold: float = DEFAULT_THRESHOLD
+    # Set when --target solved the threshold, so callers can report which
+    # number was actually used and whether the goal was reachable.
+    target_ratio: float | None = None
 
     @property
     def dropped(self) -> int:
@@ -359,11 +370,123 @@ def detect_events(
     return [Event(start=begin, end=finish, fps=fps) for begin, finish in merged]
 
 
+def keep_ratio_for(
+    scores: Sequence[float],
+    *,
+    fps: float,
+    threshold: float,
+    pad_seconds: float = DEFAULT_PAD_SECONDS,
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+    cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+) -> float:
+    """Fraction of the clip that ``threshold`` would keep."""
+    if not scores:
+        return 0.0
+
+    events = detect_events(
+        scores,
+        fps=fps,
+        threshold=threshold,
+        pad_seconds=pad_seconds,
+        min_event_seconds=min_event_seconds,
+        cooldown_seconds=cooldown_seconds,
+    )
+    return sum(event.frames for event in events) / len(scores)
+
+
+def smallest_possible_ratio(
+    frames: int,
+    *,
+    fps: float,
+    pad_seconds: float = DEFAULT_PAD_SECONDS,
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+) -> float:
+    """Share of the clip a single shortest event already occupies.
+
+    Padding and the minimum event length quantise what is reachable: on a short
+    clip one unavoidable event can exceed a small target, and no threshold will
+    do better.
+    """
+    if frames <= 0 or fps <= 0:
+        return 0.0
+
+    shortest = (min_event_seconds + 2 * pad_seconds) * fps
+    return min(shortest / frames, 1.0)
+
+
+def solve_threshold(
+    scores: Sequence[float],
+    *,
+    fps: float,
+    target_ratio: float,
+    pad_seconds: float = DEFAULT_PAD_SECONDS,
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+    cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+    steps: int = SOLVER_STEPS,
+) -> float:
+    """Find the threshold that keeps roughly ``target_ratio`` of the clip.
+
+    Raising the threshold keeps less, so the ratio falls monotonically and can
+    be bisected. The search is geometric because useful thresholds span orders
+    of magnitude — 0.001 and 0.1 are both reasonable for different cameras, and
+    stepping linearly would spend every step in the wrong decade.
+
+    A video cannot say how much of itself is worth keeping, so this asks the
+    caller for that judgement and then solves for it.
+    """
+    if not 0.0 < target_ratio <= 1.0:
+        raise ValueError(f"Target must be above 0 and at most 1, got {target_ratio}")
+    if fps <= 0:
+        raise ValueError(f"fps must be greater than zero, got {fps}")
+    if not scores:
+        return DEFAULT_THRESHOLD
+
+    # One shortest event already occupies a fixed share of the clip, so a
+    # smaller target cannot be met. Aiming below it only drives the threshold
+    # up until nothing survives, which is worse than the smallest real summary.
+    floor = smallest_possible_ratio(
+        len(scores),
+        fps=fps,
+        pad_seconds=pad_seconds,
+        min_event_seconds=min_event_seconds,
+    )
+    goal = max(target_ratio, floor)
+
+    def ratio(threshold: float) -> float:
+        return keep_ratio_for(
+            scores,
+            fps=fps,
+            threshold=threshold,
+            pad_seconds=pad_seconds,
+            min_event_seconds=min_event_seconds,
+            cooldown_seconds=cooldown_seconds,
+        )
+
+    low, high = SOLVER_MIN_THRESHOLD, SOLVER_MAX_THRESHOLD
+
+    # Nothing clears even the lowest threshold: the clip is essentially still.
+    if ratio(low) <= 0.0:
+        return low
+
+    for _ in range(steps):
+        middle = (low * high) ** 0.5
+        if ratio(middle) > goal:
+            low = middle
+        else:
+            high = middle
+
+    # `low` is the last threshold known to keep at least the goal. `high` may
+    # keep nothing at all, so prefer the end that is guaranteed to produce a
+    # summary rather than the midpoint between them.
+    return low if ratio(high) <= 0.0 else (low * high) ** 0.5
+
+
 def summarize_video(
     source: str | Path,
     destination: str | Path | None = None,
     *,
     threshold: float = DEFAULT_THRESHOLD,
+    target_ratio: float | None = None,
     window: int = DEFAULT_WINDOW,
     tolerance: int = DEFAULT_TOLERANCE,
     pad_seconds: float = DEFAULT_PAD_SECONDS,
@@ -377,6 +500,10 @@ def summarize_video(
     which is what ``--dry-run`` uses. Pass a ``progress`` reporter to follow
     long runs; without one the call stays silent.
 
+    ``target_ratio`` replaces ``threshold`` with a solved one that keeps about
+    that share of the clip. A video cannot say how much of itself is worth
+    keeping, so the caller states the goal and the threshold follows.
+
     ``comparison_edge`` overrides the resolution tier motion is measured at;
     without one it follows the source, which is what ``auto`` means on the CLI.
 
@@ -386,6 +513,8 @@ def summarize_video(
     """
     if not 0.0 <= threshold <= 1.0:
         raise VideoError(f"Threshold must be between 0 and 1, got {threshold}")
+    if target_ratio is not None and not 0.0 < target_ratio <= 1.0:
+        raise VideoError(f"Target must be above 0 and at most 1, got {target_ratio}")
     if window < 1:
         raise VideoError(f"Window must be at least 1 frame, got {window}")
     if not 0 <= tolerance <= 255:
@@ -425,10 +554,22 @@ def summarize_video(
         reporter.advance()
     reporter.finish()
 
+    resolved_threshold = threshold
+    if target_ratio is not None:
+        # Pass one already scored every frame, so the search runs on the exact
+        # distribution and costs no extra decoding.
+        resolved_threshold = solve_threshold(
+            scores,
+            fps=fps,
+            target_ratio=target_ratio,
+            pad_seconds=pad_seconds,
+            min_event_seconds=min_event_seconds,
+        )
+
     events = detect_events(
         scores,
         fps=fps,
-        threshold=threshold,
+        threshold=resolved_threshold,
         pad_seconds=pad_seconds,
         min_event_seconds=min_event_seconds,
     )
@@ -445,7 +586,14 @@ def summarize_video(
         )
         reporter.finish()
 
-    return SummaryStats(total=total, kept=kept, fps=fps, events=tuple(events))
+    return SummaryStats(
+        total=total,
+        kept=kept,
+        fps=fps,
+        events=tuple(events),
+        threshold=resolved_threshold,
+        target_ratio=target_ratio,
+    )
 
 
 def _reporting(frames: Iterable[MatLike], reporter: Progress) -> Iterator[MatLike]:

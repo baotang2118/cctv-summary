@@ -282,3 +282,48 @@ def test_windowed_play_gets_no_progress(sample_video, monkeypatch):
     main(["play", str(sample_video.path)])
 
     assert captured["progress"] is None
+
+
+def test_target_accepts_a_percentage():
+    args = build_parser().parse_args(["summarize", "clip.mp4", "--target", "10%"])
+    assert args.target == pytest.approx(0.1)
+
+
+def test_target_accepts_a_fraction():
+    args = build_parser().parse_args(["summarize", "clip.mp4", "--target", "0.25"])
+    assert args.target == pytest.approx(0.25)
+
+
+def test_target_defaults_to_off():
+    args = build_parser().parse_args(["summarize", "clip.mp4"])
+    assert args.target is None
+
+
+@pytest.mark.parametrize("bad", ["0%", "120%", "-5%", "abc", ""])
+def test_target_rejects_nonsense(bad, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["summarize", "clip.mp4", "--target", bad])
+
+    assert "--target" in capsys.readouterr().err
+
+
+def test_target_reports_the_threshold_it_chose(sample_video, capsys):
+    main(["summarize", str(sample_video.path), "--dry-run", "--target", "50%"])
+
+    out = capsys.readouterr().out
+    assert "auto:" in out
+    assert "--threshold" in out
+
+
+def test_without_target_no_auto_line_is_printed(sample_video, capsys):
+    main(["summarize", str(sample_video.path), "--dry-run"])
+
+    assert "auto:" not in capsys.readouterr().out
+
+
+def test_an_unreachable_target_is_explained(sample_video, capsys):
+    # The fixture clip is far shorter than one padded event, so any small
+    # target overshoots and the reason should be stated.
+    main(["summarize", str(sample_video.path), "--dry-run", "--target", "1%"])
+
+    assert "unreachable" in capsys.readouterr().out

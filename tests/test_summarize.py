@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 from cctv_summary.summarize import (
+    DEFAULT_THRESHOLD,
+    SOLVER_MIN_THRESHOLD,
     Event,
     RollingBackground,
     SummaryStats,
@@ -12,7 +14,10 @@ from cctv_summary.summarize import (
     comparison_edge_for,
     detect_events,
     downscale_to_gray,
+    keep_ratio_for,
     motion_scores,
+    smallest_possible_ratio,
+    solve_threshold,
     summarize_video,
 )
 from cctv_summary.video import VideoError, iter_frames, probe
@@ -591,3 +596,118 @@ def test_summarize_stays_silent_without_a_reporter(sample_video, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def noisy_signal(length: int, bursts: list[tuple[int, int, float]]) -> list[float]:
+    """A quiet signal with motion bursts of a given strength."""
+    values = [0.0] * length
+    for start, end, level in bursts:
+        for index in range(start, end):
+            values[index] = level
+    return values
+
+
+def test_solver_hits_a_reachable_target():
+    # Long enough that padding does not dominate what is achievable.
+    scores = noisy_signal(
+        3000,
+        [(i, i + 40, 0.02 + (i % 7) * 0.01) for i in range(0, 3000, 300)],
+    )
+
+    threshold = solve_threshold(scores, fps=10.0, target_ratio=0.3)
+    kept = keep_ratio_for(scores, fps=10.0, threshold=threshold)
+
+    assert 0.2 <= kept <= 0.45
+
+
+def test_a_lower_target_yields_a_higher_threshold():
+    scores = noisy_signal(
+        3000,
+        [(i, i + 40, 0.01 + (i % 11) * 0.01) for i in range(0, 3000, 200)],
+    )
+
+    loose = solve_threshold(scores, fps=10.0, target_ratio=0.5)
+    strict = solve_threshold(scores, fps=10.0, target_ratio=0.1)
+
+    assert strict > loose
+
+
+def test_the_solver_always_leaves_something_to_keep():
+    # A target below one shortest event is unreachable, but returning an empty
+    # summary is worse than returning the smallest real one.
+    scores = noisy_signal(600, [(100, 140, 0.05), (400, 440, 0.05)])
+
+    threshold = solve_threshold(scores, fps=10.0, target_ratio=0.01)
+
+    assert keep_ratio_for(scores, fps=10.0, threshold=threshold) > 0
+
+
+def test_still_footage_solves_to_the_lowest_threshold():
+    threshold = solve_threshold([0.0] * 500, fps=10.0, target_ratio=0.1)
+
+    assert threshold == pytest.approx(SOLVER_MIN_THRESHOLD)
+
+
+def test_an_empty_signal_falls_back_to_the_default():
+    assert solve_threshold([], fps=10.0, target_ratio=0.1) == DEFAULT_THRESHOLD
+
+
+def test_the_solver_rejects_a_target_outside_the_range():
+    for bad in (0.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="Target"):
+            solve_threshold([0.1] * 100, fps=10.0, target_ratio=bad)
+
+
+def test_the_solver_rejects_a_bad_fps():
+    with pytest.raises(ValueError, match="fps"):
+        solve_threshold([0.1] * 100, fps=0, target_ratio=0.1)
+
+
+def test_keep_ratio_rises_as_the_threshold_falls():
+    scores = noisy_signal(2000, [(i, i + 50, 0.03) for i in range(0, 2000, 250)])
+
+    ratios = [
+        keep_ratio_for(scores, fps=10.0, threshold=t) for t in (0.001, 0.01, 0.05, 0.2)
+    ]
+
+    assert ratios == sorted(ratios, reverse=True)
+
+
+def test_keep_ratio_of_an_empty_signal_is_zero():
+    assert keep_ratio_for([], fps=10.0, threshold=0.01) == 0.0
+
+
+def test_the_smallest_event_scales_with_the_clip():
+    short = smallest_possible_ratio(300, fps=10.0)
+    long_clip = smallest_possible_ratio(30000, fps=10.0)
+
+    assert short > long_clip
+    assert long_clip > 0
+
+
+def test_the_smallest_event_is_capped_at_the_whole_clip():
+    assert smallest_possible_ratio(10, fps=10.0) == 1.0
+
+
+def test_the_smallest_event_of_an_empty_clip_is_zero():
+    assert smallest_possible_ratio(0, fps=10.0) == 0.0
+
+
+def test_target_overrides_threshold(sample_video):
+    explicit = summarize_video(sample_video.path, threshold=0.5)
+    targeted = summarize_video(sample_video.path, threshold=0.5, target_ratio=0.5)
+
+    assert targeted.threshold != explicit.threshold
+    assert targeted.target_ratio == 0.5
+
+
+def test_stats_report_the_threshold_actually_used(sample_video):
+    stats = summarize_video(sample_video.path, threshold=0.123)
+
+    assert stats.threshold == 0.123
+    assert stats.target_ratio is None
+
+
+def test_summarize_rejects_a_bad_target(sample_video):
+    with pytest.raises(VideoError, match="Target"):
+        summarize_video(sample_video.path, target_ratio=0.0)

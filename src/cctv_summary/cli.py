@@ -18,9 +18,14 @@ from cctv_summary.summarize import (
     DEFAULT_TOLERANCE,
     DEFAULT_WINDOW,
     MAX_COMPARISON_EDGE,
+    SummaryStats,
+    smallest_possible_ratio,
     summarize_video,
 )
 from cctv_summary.video import VideoError, play, probe
+
+# How far past the target the result may land before it is worth explaining.
+TARGET_OVERSHOOT = 1.5
 
 
 def _handle_info(args: argparse.Namespace) -> int:
@@ -77,6 +82,24 @@ def _comparison_edge(value: str) -> int | None:
     return edge
 
 
+def _keep_ratio(value: str) -> float:
+    """Parse --target, accepting either ``10%`` or ``0.1``."""
+    text = value.strip()
+    try:
+        number = float(text.removesuffix("%"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a share such as '10%' or '0.1', got {value!r}"
+        ) from None
+
+    ratio = number / 100 if text.endswith("%") else number
+    if not 0.0 < ratio <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"must be above 0% and at most 100%, got {value!r}"
+        )
+    return ratio
+
+
 def _handle_summarize(args: argparse.Namespace) -> int:
     if args.destination is None and not args.dry_run:
         print(
@@ -90,6 +113,7 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         args.source,
         destination,
         threshold=args.threshold,
+        target_ratio=args.target,
         window=args.window,
         tolerance=args.tolerance,
         pad_seconds=args.pad,
@@ -99,6 +123,11 @@ def _handle_summarize(args: argparse.Namespace) -> int:
     )
 
     print(f"source:   {stats.total} frames, {_timestamp(stats.source_seconds)}")
+    if stats.target_ratio is not None:
+        print(
+            f"auto:     --threshold {stats.threshold:.4f}"
+            f" for a {stats.target_ratio:.0%} target"
+        )
     print(f"events:   {len(stats.events)}")
 
     for number, event in enumerate(stats.events, start=1):
@@ -113,6 +142,10 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         f" ({stats.kept_ratio:.1%} of source)"
     )
 
+    _warn_if_target_missed(
+        stats, pad_seconds=args.pad, min_event_seconds=args.min_event
+    )
+
     if not stats.events:
         print("no motion found: try a lower --threshold")
     elif destination is None:
@@ -120,6 +153,35 @@ def _handle_summarize(args: argparse.Namespace) -> int:
     else:
         print(f"wrote:    {destination}")
     return 0
+
+
+def _warn_if_target_missed(
+    stats: SummaryStats,
+    *,
+    pad_seconds: float,
+    min_event_seconds: float,
+) -> None:
+    """Explain an overshoot rather than quietly returning the wrong amount.
+
+    Padding and the minimum event length quantise what is reachable, so a small
+    target is simply impossible on a short clip.
+    """
+    if stats.target_ratio is None or not stats.events:
+        return
+    if stats.kept_ratio <= stats.target_ratio * TARGET_OVERSHOOT:
+        return
+
+    floor = smallest_possible_ratio(
+        stats.total,
+        fps=stats.fps,
+        pad_seconds=pad_seconds,
+        min_event_seconds=min_event_seconds,
+    )
+    if floor > stats.target_ratio:
+        print(
+            f"note:     one shortest event is already {floor:.0%} of this clip,"
+            f" so {stats.target_ratio:.0%} is unreachable"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,6 +240,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_THRESHOLD,
         help="Fraction of pixels that must move to count as motion, 0-1. A "
         "distant person covers only about 1%% of the frame (default: %(default)s).",
+    )
+    summarize_parser.add_argument(
+        "--target",
+        type=_keep_ratio,
+        default=None,
+        metavar="SHARE",
+        help="Tune --threshold automatically to keep about this much of the "
+        "clip, given as 10%% or 0.1. Overrides --threshold.",
     )
     summarize_parser.add_argument(
         "--pad",
