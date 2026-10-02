@@ -9,6 +9,7 @@ from cctv_summary.summarize import (
     RollingBackground,
     SummaryStats,
     change_score,
+    comparison_edge_for,
     detect_events,
     downscale_to_gray,
     motion_scores,
@@ -82,6 +83,61 @@ def test_downscale_to_gray_leaves_small_frames_alone():
 def test_downscale_to_gray_rejects_empty_frames():
     with pytest.raises(ValueError, match="empty frame"):
         downscale_to_gray(np.zeros((0, 10, 3), np.uint8))
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "expected"),
+    [
+        (640, 480, 256),
+        (1280, 720, 256),
+        (1920, 1080, 320),
+        (2560, 1440, 480),
+        (3840, 2160, 640),
+        (1080, 1920, 320),  # portrait sits in the same tier as its landscape twin
+    ],
+)
+def test_comparison_edge_steps_up_with_resolution(width, height, expected):
+    assert comparison_edge_for(width, height) == expected
+
+
+def test_comparison_edge_rejects_empty_frames():
+    with pytest.raises(ValueError, match="must be positive"):
+        comparison_edge_for(0, 100)
+
+
+def test_downscale_to_gray_follows_the_resolution_tier():
+    # 4K is compared at a larger size than 1080p: squeezed too far, a small
+    # distant figure's contrast is averaged away and it stops registering.
+    assert max(downscale_to_gray(np.zeros((2160, 3840, 3), np.uint8)).shape) == 640
+    assert max(downscale_to_gray(np.zeros((720, 1280, 3), np.uint8)).shape) == 256
+
+
+def test_downscale_to_gray_honours_an_explicit_edge():
+    gray = downscale_to_gray(np.zeros((1080, 1920, 3), np.uint8), edge=96)
+
+    assert gray.shape == (54, 96)
+
+
+def test_downscale_to_gray_rejects_a_zero_edge():
+    with pytest.raises(ValueError, match="at least 1 pixel"):
+        downscale_to_gray(np.zeros((40, 50, 3), np.uint8), edge=0)
+
+
+def test_motion_scores_compare_at_the_requested_edge():
+    # A 4-pixel blob survives a 320-wide comparison and is erased by a 16-wide
+    # one, which is exactly the detail the tiers trade away.
+    frames = []
+    for index in range(12):
+        img = np.zeros((1080, 1920, 3), np.uint8)
+        if index >= 6:
+            img[540:544, 960:964] = 255
+        frames.append(img)
+
+    detailed = list(motion_scores(frames, window=3, comparison_edge=320))
+    coarse = list(motion_scores(frames, window=3, comparison_edge=16))
+
+    assert max(detailed) > 0.0
+    assert max(coarse) == 0.0
 
 
 def test_rolling_background_averages_its_contents():
@@ -447,6 +503,11 @@ def test_summarize_rejects_a_bad_tolerance(sample_video):
 def test_summarize_rejects_negative_padding(sample_video):
     with pytest.raises(VideoError, match="Padding"):
         summarize_video(sample_video.path, pad_seconds=-1)
+
+
+def test_summarize_rejects_a_bad_comparison_edge(sample_video):
+    with pytest.raises(VideoError, match="Comparison edge"):
+        summarize_video(sample_video.path, comparison_edge=0)
 
 
 def test_summarize_reports_a_missing_source(tmp_path):

@@ -11,11 +11,13 @@ from typing import TextIO
 from cctv_summary import __version__
 from cctv_summary.progress import NullProgress, Progress, TerminalProgress
 from cctv_summary.summarize import (
+    COMPARISON_EDGE_TIERS,
     DEFAULT_MIN_EVENT_SECONDS,
     DEFAULT_PAD_SECONDS,
     DEFAULT_THRESHOLD,
     DEFAULT_TOLERANCE,
     DEFAULT_WINDOW,
+    MAX_COMPARISON_EDGE,
     summarize_video,
 )
 from cctv_summary.video import VideoError, play, probe
@@ -60,6 +62,21 @@ def _progress_for(stream: TextIO) -> Progress:
     return NullProgress()
 
 
+def _comparison_edge(value: str) -> int | None:
+    """Parse --comparison-edge: ``auto`` follows the source resolution."""
+    if value.strip().lower() == "auto":
+        return None
+    try:
+        edge = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a pixel count or 'auto', got {value!r}"
+        ) from None
+    if edge < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1 pixel, got {edge}")
+    return edge
+
+
 def _handle_summarize(args: argparse.Namespace) -> int:
     if args.destination is None and not args.dry_run:
         print(
@@ -77,6 +94,7 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         tolerance=args.tolerance,
         pad_seconds=args.pad,
         min_event_seconds=args.min_event,
+        comparison_edge=args.comparison_edge,
         progress=_progress_for(sys.stderr),
     )
 
@@ -185,6 +203,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TOLERANCE,
         help="Per-pixel intensity change that counts as movement, 0-255 "
         "(default: %(default)s).",
+    )
+    tiers = ", ".join(f"up to {limit}p {edge}" for limit, edge in COMPARISON_EDGE_TIERS)
+    summarize_parser.add_argument(
+        "--comparison-edge",
+        type=_comparison_edge,
+        default=None,
+        metavar="PIXELS",
+        help="Longest edge motion is measured at, or 'auto' to step it up with "
+        f"the source resolution ({tiers}, above that {MAX_COMPARISON_EDGE}) "
+        "(default: auto).",
     )
     summarize_parser.add_argument(
         "--dry-run",

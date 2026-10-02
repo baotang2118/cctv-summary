@@ -51,20 +51,57 @@ DEFAULT_MIN_EVENT_SECONDS: float = 1.0
 # How long motion must stay low before an event is considered over.
 DEFAULT_COOLDOWN_SECONDS: float = 1.0
 
-# Frames are compared at this long-edge size: full-resolution diffs are wasteful
-# and noisier without changing the decision much.
-COMPARISON_EDGE: int = 320
+# Frames are compared at a reduced long-edge size: full-resolution diffs are
+# wasteful and noisier without changing the decision much. One fixed size is
+# wrong across cameras, though. Scores are a *share* of pixels, so they barely
+# shift with scale, but a small distant figure stops registering at all:
+# area averaging spreads its contrast across the pixels it is squeezed into
+# until nothing clears the per-pixel tolerance. Measured on a 4K frame, a
+# 10x22px figure 30 levels brighter than its background scores exactly 0.0 at
+# 320 and registers at 480. So the size steps up with the source's vertical
+# resolution, in tiers of (vertical resolution, comparison long edge) checked
+# in order. Anything above the last tier uses MAX_COMPARISON_EDGE.
+COMPARISON_EDGE_TIERS: tuple[tuple[int, int], ...] = (
+    (720, 256),
+    (1080, 320),
+    (1440, 480),
+)
+
+MAX_COMPARISON_EDGE: int = 640
 
 
-def downscale_to_gray(frame: MatLike) -> np.ndarray:
-    """Downscale and grayscale a frame for cheap, noise-tolerant comparison."""
+def comparison_edge_for(width: int, height: int) -> int:
+    """Long-edge size that frames of this resolution should be compared at."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Frame size must be positive, got {width}x{height}")
+
+    # Keyed on the short edge so the tiers mean what their names say: 1080 is
+    # the "1080p" tier whether the source is 1920x1080 or an ultrawide.
+    vertical = min(width, height)
+    for limit, edge in COMPARISON_EDGE_TIERS:
+        if vertical <= limit:
+            return edge
+    return MAX_COMPARISON_EDGE
+
+
+def downscale_to_gray(frame: MatLike, *, edge: int | None = None) -> np.ndarray:
+    """Downscale and grayscale a frame for cheap, noise-tolerant comparison.
+
+    ``edge`` caps the longest side; without one it is chosen from the frame's
+    own resolution by :func:`comparison_edge_for`.
+    """
     height, width = frame.shape[:2]
     if height == 0 or width == 0:
         raise ValueError("Cannot compare an empty frame")
 
+    if edge is None:
+        edge = comparison_edge_for(width, height)
+    elif edge < 1:
+        raise ValueError(f"Comparison edge must be at least 1 pixel, got {edge}")
+
     longest = max(height, width)
-    if longest > COMPARISON_EDGE:
-        scale = COMPARISON_EDGE / longest
+    if longest > edge:
+        scale = edge / longest
         frame = cv2.resize(
             frame,
             (max(int(width * scale), 1), max(int(height * scale), 1)),
@@ -224,17 +261,21 @@ def motion_scores(
     *,
     window: int = DEFAULT_WINDOW,
     tolerance: int = DEFAULT_TOLERANCE,
+    comparison_edge: int | None = None,
 ) -> Iterator[float]:
     """Yield the fraction of pixels moving in each frame, 0.0-1.0.
 
     Motion is measured against a rolling background rather than the previous
     frame, so a slow walker registers for as long as they are crossing rather
     than only when they move quickly.
+
+    ``comparison_edge`` caps the size frames are compared at; without one each
+    frame's own resolution picks the tier.
     """
     background = RollingBackground(window)
 
     for frame in frames:
-        gray = downscale_to_gray(frame)
+        gray = downscale_to_gray(frame, edge=comparison_edge)
         average = background.average
         score = (
             change_score(gray, average, tolerance=tolerance)
@@ -327,6 +368,7 @@ def summarize_video(
     tolerance: int = DEFAULT_TOLERANCE,
     pad_seconds: float = DEFAULT_PAD_SECONDS,
     min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
+    comparison_edge: int | None = None,
     progress: Progress | None = None,
 ) -> SummaryStats:
     """Write a copy of ``source`` containing only its motion events.
@@ -334,6 +376,9 @@ def summarize_video(
     With ``destination=None`` the footage is analysed but nothing is written,
     which is what ``--dry-run`` uses. Pass a ``progress`` reporter to follow
     long runs; without one the call stays silent.
+
+    ``comparison_edge`` overrides the resolution tier motion is measured at;
+    without one it follows the source, which is what ``auto`` means on the CLI.
 
     The source is decoded twice: once to score motion, once to write. Padding
     reaches backwards from the moment motion is noticed, and buffering an hour
@@ -351,14 +396,31 @@ def summarize_video(
         raise VideoError(
             f"Minimum event length cannot be negative, got {min_event_seconds}"
         )
+    if comparison_edge is not None and comparison_edge < 1:
+        raise VideoError(
+            f"Comparison edge must be at least 1 pixel, got {comparison_edge}"
+        )
 
     info = probe(source)
     fps = info.fps if info.fps > 0 else FALLBACK_FPS
     reporter = progress if progress is not None else NullProgress()
 
+    # Resolved once from the container rather than per frame, so every score in
+    # the run is measured at the same scale even if a frame arrives oddly sized.
+    edge = (
+        comparison_edge
+        if comparison_edge is not None
+        else comparison_edge_for(max(info.width, 1), max(info.height, 1))
+    )
+
     reporter.start("analysing", info.frame_count)
     scores = []
-    for score in motion_scores(iter_frames(source), window=window, tolerance=tolerance):
+    for score in motion_scores(
+        iter_frames(source),
+        window=window,
+        tolerance=tolerance,
+        comparison_edge=edge,
+    ):
         scores.append(score)
         reporter.advance()
     reporter.finish()

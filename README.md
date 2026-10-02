@@ -191,10 +191,25 @@ Note that `--min-event` is applied *before* `--pad`. That ordering matters: padd
 | `--min-event` | `1.0` | Ignore anything shorter than this, in seconds |
 | `--window` | `30` | Frames in the rolling background average |
 | `--tolerance` | `25` | Per-pixel intensity change counting as movement (0–255) |
+| `--comparison-edge` | `auto` | Longest edge motion is measured at, in pixels |
 
 `--threshold` and `--tolerance` are easy to confuse. `--tolerance` decides whether a
 single *pixel* changed enough to count as movement; `--threshold` decides whether *enough
 pixels* moved for the frame to count as motion.
+
+Frames are shrunk before they are compared: full-resolution diffs are slow and noisier
+without changing the decision much. `auto` steps that size up with the source resolution.
+Shrinking does not lower the score much - it is a *fraction* of pixels, and the frame
+shrinks with the subject - but squeeze a small distant figure far enough and its contrast
+is averaged away until it stops registering at all. On a 4K clip a figure 10x22px and 30
+levels brighter than its background scored exactly zero at 320, and registered at 480.
+
+| Source | Compared at |
+| --- | --- |
+| up to 720p | 256px long edge |
+| up to 1080p | 320px |
+| up to 1440p | 480px |
+| above that | 640px |
 
 ### Tuning
 
@@ -207,6 +222,9 @@ silently discard every event - at `0.05` that same clip returned a single frame.
 
 - **Missing events?** Lower `--threshold` (try `0.005`), or lower `--tolerance` if people
   blend into the background.
+- **Distant or very small figures missed on a high-resolution camera?** Raise
+  `--comparison-edge` (e.g. `--comparison-edge 640`) so they survive the downscale, at
+  the cost of analysis speed.
 - **Too many events?** Raise `--threshold`, or raise `--min-event` to ignore brief blips.
 - **Events cut short, or one person split in two?** Raise `--pad`.
 - **Grainy night footage triggering constantly?** Raise `--tolerance` to `40`+ so sensor

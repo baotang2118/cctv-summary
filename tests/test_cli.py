@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from cctv_summary import __version__
-from cctv_summary.cli import _progress_for, main
+from cctv_summary.cli import _progress_for, build_parser, main
 from cctv_summary.progress import NullProgress, TerminalProgress
 from cctv_summary.video import VideoError
 
@@ -176,6 +176,55 @@ def test_summarize_writes_a_file(sample_video, tmp_path, capsys):
 def test_summarize_surfaces_video_errors(tmp_path, capsys):
     assert main(["summarize", str(tmp_path / "nope.avi"), "--dry-run"]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_comparison_edge_defaults_to_the_resolution_tier():
+    args = build_parser().parse_args(["summarize", "clip.avi", "--dry-run"])
+
+    assert args.comparison_edge is None
+
+
+def test_comparison_edge_accepts_auto():
+    args = build_parser().parse_args(
+        ["summarize", "clip.avi", "--dry-run", "--comparison-edge", "auto"]
+    )
+
+    assert args.comparison_edge is None
+
+
+def test_comparison_edge_accepts_a_pixel_count():
+    args = build_parser().parse_args(
+        ["summarize", "clip.avi", "--dry-run", "--comparison-edge", "480"]
+    )
+
+    assert args.comparison_edge == 480
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "wide"])
+def test_comparison_edge_rejects_nonsense(value, capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(
+            ["summarize", "clip.avi", "--dry-run", "--comparison-edge", value]
+        )
+
+    assert excinfo.value.code == 2
+    assert "--comparison-edge" in capsys.readouterr().err
+
+
+def test_summarize_forwards_the_comparison_edge(sample_video, capsys):
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--comparison-edge",
+                "64",
+            ]
+        )
+        == 0
+    )
+    assert "events:" in capsys.readouterr().out
 
 
 class FakeStream:

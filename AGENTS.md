@@ -62,6 +62,7 @@ uv run cctv-summary play FILE --speed 4    # faster, badges the top-right corner
 uv run cctv-summary play FILE --headless   # no window, progress on stderr
 uv run cctv-summary summarize SRC DST      # motion events only, progress on stderr
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
+uv run cctv-summary summarize SRC DST --comparison-edge 640  # override the resolution tier
 uv run python -m cctv_summary  # module entry point
 ```
 
@@ -149,6 +150,22 @@ happened matters as much as the clip itself.
 **`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
 pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
 
+**The comparison size is tiered, not a constant.** `downscale_to_gray()` caps the long
+edge before diffing, and `comparison_edge_for(width, height)` picks that cap from the
+source's short edge: ≤720p→256, ≤1080p→320, ≤1440p→480, above→640
+(`COMPARISON_EDGE_TIERS` / `MAX_COMPARISON_EDGE`). `summarize_video()` resolves the edge
+**once from `probe()`** and passes it down, so every score in a run is measured at the
+same scale; `--comparison-edge` (`auto` or a pixel count) overrides it. Only the motion
+decision is downscaled — decode and output stay at source resolution.
+
+**Why tiers, measured.** Scores are a *share* of pixels, so shrinking the frame barely
+moves them — on a 4K clip a 40x90px figure scored 0.00046 at 256 and 0.00045 at 640. The
+tier does not raise the score, it decides whether the figure registers **at all**: area
+averaging dilutes a small target's contrast until nothing clears `tolerance`. A 10x22px
+figure 30 levels above its background scored exactly `0.0` at 256 and 320, and registered
+at 480 and 640. So do not "tune" the tiers by looking at score magnitude; look for scores
+collapsing to zero.
+
 **Calibration, measured not guessed.** On a synthetic 640x360 corridor clip a walking
 person scores **~0.01** (1% of pixels) and peaks at 0.027; idle frames score ~0.0000.
 That is why `DEFAULT_THRESHOLD` is `0.01` and not something like `0.10` — at 0.05 the
@@ -161,7 +178,9 @@ overshoot. Anything displaying `current/total` must clamp, or it shows `1200/112
 
 **Where the time goes.** Profiled on a 1120-frame 720p clip, decode **54%**,
 `downscale_to_gray` **37%**, rolling background **7%**, `change_score` **1%** — 5.0s
-total. Decode is now the floor; the remaining pixel work is small.
+total. Decode is now the floor; the remaining pixel work is small. Those figures were
+measured when every source was compared at 320px; the pixel work now scales with the
+resolution tier, so a 4K source at 640px costs roughly 4x the per-frame pixel work.
 
 `RollingBackground` used to dominate at **60%** (18.1s total) because `average` re-stacked
 and re-averaged the whole window every frame. It now keeps a running total, adding the
