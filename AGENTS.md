@@ -39,7 +39,8 @@ file in a window (badging the corner when `--speed` is above 1) or decodes headl
 (`--headless`, which reports progress since nothing else shows it is alive);
 `cctv-summary summarize` finds the stretches where something moves and
 writes them out as continuous clips, reporting progress as it goes, listing their
-timestamps and burning a scissors mark into every output frame. Motion is raw pixel
+timestamps, burning a scissors mark into every output frame, and optionally exporting the
+events as a JSON manifest (`--manifest`). Motion is raw pixel
 change — there is no object or person detection, so a swaying tree counts as an event.
 
 ## Toolchain
@@ -64,6 +65,8 @@ uv run cctv-summary summarize SRC DST      # motion events only, progress on std
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
 uv run cctv-summary summarize SRC --target 10%  # solve --threshold for a keep share
 uv run cctv-summary summarize SRC DST --comparison-edge 640  # override the resolution tier
+uv run cctv-summary summarize SRC DST --manifest events.json  # JSON event manifest
+uv run cctv-summary summarize SRC --dry-run --manifest -      # manifest on stdout
 uv run python -m cctv_summary  # module entry point
 ```
 
@@ -79,10 +82,11 @@ src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand ha
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
 src/cctv_summary/summarize.py  motion scoring, event detection, threshold solver
+src/cctv_summary/manifest.py   JSON event manifest (build/dump/write, format_timestamp)
 src/cctv_summary/progress.py   Progress protocol, TerminalProgress, NullProgress
 scripts/record-camera.sh       Linux cron helper: locked 20-minute VLC recordings
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress.py)
+tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress/_manifest.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 LICENSE                        GNU GPL version 3 (GPL-3.0-only)
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
@@ -145,8 +149,11 @@ look-behind problem.
 
 Output is written at the source fps, so it is shorter but no longer wall-clock accurate,
 and OpenCV carries no audio. `SummaryStats.events` carries the timings, which the CLI
-prints as an `HH:MM:SS` table — for a 60-minute recording, knowing *when* something
-happened matters as much as the clip itself.
+prints as an `HH:MM:SS` table and `manifest.py` exports as JSON — for a 60-minute
+recording, knowing *when* something happened matters as much as the clip itself.
+`SummaryStats` also records the knobs the run used (including the *resolved*
+`comparison_edge`, never the `auto` that asked for it), so a report or manifest can
+describe a result without the caller re-threading arguments.
 
 **`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
 pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
@@ -238,9 +245,10 @@ costs more than the tiny 320x180 operations save.
   plain values with no file I/O, so event logic is testable with a sketched signal
   (`"...###..."`) instead of real footage. Keep decoding and encoding in
   `summarize_video()`.
-- **Errors.** `video.py` and `summarize.py` raise `VideoError` for anything a user can
-  cause (missing file, unreadable container, bad speed/threshold/window, no GUI, missing
-  codec). `main()` catches it, prints `error: ...` to stderr, and returns `1`. Never let
+- **Errors.** `video.py`, `summarize.py`, and `manifest.py` raise `VideoError` for
+  anything a user can cause (missing file, unreadable container, bad
+  speed/threshold/window, no GUI, missing codec, unwritable manifest path). `main()`
+  catches it, prints `error: ...` to stderr, and returns `1`. Never let
   a raw `cv2.error` reach the user.
 - **Drawing lives in `overlay.py`.** Annotation functions take a frame, return a new one,
   and **must not mutate the input** — OpenCV reuses decode buffers, so draw on
@@ -265,10 +273,21 @@ costs more than the tiny 320x180 operations save.
   throttled to ~10/sec; redrawing per frame costs more than the work being measured.
   **Windowed playback is deliberately unreported** — the window is its own sign of life,
   so the CLI passes a reporter only for `--headless`.
+- **The manifest is data, not a rendering of the table.** `manifest.py` builds a plain
+  dict from a `SummaryStats` and writes it with `json`; it does no video work and never
+  prints. `MANIFEST_VERSION` is bumped only when the shape changes in a way that could
+  break a consumer. `format_timestamp()` lives there and the CLI table uses it, so both
+  renderings of a run agree. **`--manifest -` moves the readable report to stderr** —
+  JSON on stdout has to be the only thing there or piping it into a parser fails.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
   (headless, never waits) as the implementations. Anything needing a window must accept
   an injectable display so it stays testable. `play(..., display=...)` overrides
   `headless=`.
+- **Copyright header.** Every `.py` file in `src/` and `tests/` opens with a GPLv3
+  per-file notice (`Copyright (C) 2026 Bao.TangDuc`, before any module docstring). It
+  isn't legally required for the license to apply — the appendix text is a
+  recommendation — but it keeps each file self-identifying if copied out of context.
+  Give new files the same header.
 - **Typing.** Every module starts with `from __future__ import annotations` and uses
   modern typing (`X | None`, `collections.abc`); ruff's `UP` rules enforce this.
 - **Lint/format config.** Ruff is configured in `pyproject.toml`: line length 88, rules
@@ -316,6 +335,9 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 - Test event logic with a sketched signal via the `signal("..###..")` helper rather than
   real footage: the interesting cases (hysteresis, merging, blip rejection) are about the
   score sequence, not pixels.
+- Manifest shape is tested from a hand-built `SummaryStats`, not from decoded footage;
+  `build_manifest()` is pure, so only the CLI tests need a real clip. Pass
+  `generated_at=` to assert on the timestamp.
 - **Tests must never open a window.** Use `headless=True`, pass a fake `Display` to
   `play()`, or monkeypatch `cctv_summary.cli.play`. `tests/test_video.py::FakeDisplay`
   is the reference fake and can simulate a quit key.
@@ -330,12 +352,14 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 
 **Decided:** the app reads and plays video with OpenCV, and summarizes by detecting
 motion events and keeping them as continuous clips. Those layers exist in `video.py` and
-`summarize.py`, with frame annotations in `overlay.py`. Frame-by-frame dropping was tried
+`summarize.py`, with frame annotations in `overlay.py` and a JSON event manifest in
+`manifest.py`. Frame-by-frame dropping was tried
 first and replaced: it produced scattered, unwatchable stills.
 
 **Still undecided:** whether to go beyond raw pixel motion — object or person detection
 (so a swaying tree stops counting as an event), keyframe thumbnails, burned-in
-timestamps, text summaries, and whether live RTSP input is in scope. Also unresolved: how
+timestamps, text summaries, a CSV manifest alongside the JSON one, and whether live RTSP
+input is in scope. Also unresolved: how
 to pick a threshold automatically instead of asking the user to tune it per camera.
 
 Ask the user for direction before choosing a summarization approach or adding further

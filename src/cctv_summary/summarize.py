@@ -260,6 +260,14 @@ class SummaryStats:
     # Set when --target solved the threshold, so callers can report which
     # number was actually used and whether the goal was reachable.
     target_ratio: float | None = None
+    # The knobs the run actually used, recorded so a report or manifest can
+    # say how a result was produced without the caller re-threading arguments.
+    # comparison_edge is the resolved tier, never the `auto` that asked for it.
+    pad_seconds: float = DEFAULT_PAD_SECONDS
+    min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS
+    window: int = DEFAULT_WINDOW
+    tolerance: int = DEFAULT_TOLERANCE
+    comparison_edge: int = MAX_COMPARISON_EDGE
 
     @property
     def dropped(self) -> int:
@@ -610,6 +618,11 @@ def summarize_video(
         events=tuple(events),
         threshold=resolved_threshold,
         target_ratio=target_ratio,
+        pad_seconds=pad_seconds,
+        min_event_seconds=min_event_seconds,
+        window=window,
+        tolerance=tolerance,
+        comparison_edge=edge,
     )
 
 

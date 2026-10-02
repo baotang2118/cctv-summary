@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import json
+
 import cv2
 import numpy as np
 import pytest
@@ -192,6 +194,138 @@ def test_summarize_writes_a_file(sample_video, tmp_path, capsys):
 
 def test_summarize_surfaces_video_errors(tmp_path, capsys):
     assert main(["summarize", str(tmp_path / "nope.avi"), "--dry-run"]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_summarize_writes_a_manifest(sample_video, tmp_path, capsys):
+    manifest_path = tmp_path / "events.json"
+
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--threshold",
+                "0.001",
+                "--min-event",
+                "0",
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+        == 0
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source"]["frames"] == sample_video.frames
+    assert manifest["events"]
+    assert "manifest:" in capsys.readouterr().out
+
+
+def test_manifest_records_where_the_summary_was_written(sample_video, tmp_path, capsys):
+    destination = tmp_path / "summary.avi"
+    manifest_path = tmp_path / "events.json"
+
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                str(destination),
+                "--threshold",
+                "0.001",
+                "--min-event",
+                "0",
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+        == 0
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["summary"]["path"] == str(destination)
+
+
+def test_manifest_records_the_settings_the_run_used(sample_video, tmp_path):
+    manifest_path = tmp_path / "events.json"
+
+    main(
+        [
+            "summarize",
+            str(sample_video.path),
+            "--dry-run",
+            "--threshold",
+            "0.02",
+            "--window",
+            "12",
+            "--tolerance",
+            "30",
+            "--pad",
+            "0.5",
+            "--min-event",
+            "0",
+            "--comparison-edge",
+            "64",
+            "--manifest",
+            str(manifest_path),
+        ]
+    )
+
+    settings = json.loads(manifest_path.read_text(encoding="utf-8"))["settings"]
+    assert settings["threshold"] == 0.02
+    assert settings["window"] == 12
+    assert settings["tolerance"] == 30
+    assert settings["pad_seconds"] == 0.5
+    assert settings["comparison_edge"] == 64
+
+
+def test_manifest_to_stdout_is_parseable_on_its_own(sample_video, capsys):
+    # The readable report has to step aside, or piping stdout into a parser
+    # fails on the table.
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--threshold",
+                "0.001",
+                "--min-event",
+                "0",
+                "--manifest",
+                "-",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["events"]
+    assert "events:" in captured.err
+
+
+def test_summarize_writes_no_manifest_unless_asked(sample_video, tmp_path, capsys):
+    main(["summarize", str(sample_video.path), "--dry-run"])
+
+    assert list(tmp_path.iterdir()) == []
+    assert "manifest:" not in capsys.readouterr().out
+
+
+def test_summarize_reports_an_unwritable_manifest_path(sample_video, tmp_path, capsys):
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--manifest",
+                str(tmp_path / "missing" / "events.json"),
+            ]
+        )
+        == 1
+    )
     assert "error:" in capsys.readouterr().err
 
 

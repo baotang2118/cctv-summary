@@ -458,6 +458,33 @@ def test_dry_run_reports_without_writing(sample_video, tmp_path):
     assert not destination.exists()
 
 
+def test_summarize_records_the_settings_it_ran_with(sample_video):
+    stats = summarize_video(
+        sample_video.path,
+        threshold=0.001,
+        window=12,
+        tolerance=30,
+        pad_seconds=0.5,
+        min_event_seconds=0,
+        comparison_edge=64,
+    )
+
+    assert stats.window == 12
+    assert stats.tolerance == 30
+    assert stats.pad_seconds == 0.5
+    assert stats.min_event_seconds == 0
+    assert stats.comparison_edge == 64
+
+
+def test_summarize_records_the_resolved_comparison_edge(sample_video):
+    # `auto` must come back as the tier it chose, not as the absence of a value.
+    stats = summarize_video(sample_video.path, threshold=0.001, min_event_seconds=0)
+
+    assert stats.comparison_edge == comparison_edge_for(
+        sample_video.width, sample_video.height
+    )
+
+
 def test_summarize_writes_only_the_events(sample_video, tmp_path):
     destination = tmp_path / "summary.avi"
 

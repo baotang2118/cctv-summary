@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import TextIO
 
 from cctv_summary import __version__
+from cctv_summary.manifest import (
+    build_manifest,
+    dump_manifest,
+    format_timestamp,
+    write_manifest,
+)
 from cctv_summary.progress import NullProgress, Progress, TerminalProgress
 from cctv_summary.summarize import (
     COMPARISON_EDGE_TIERS,
@@ -43,6 +49,9 @@ from cctv_summary.video import VideoError, play, probe
 
 # How far past the target the result may land before it is worth explaining.
 TARGET_OVERSHOOT = 1.5
+
+# --manifest value that means "write the JSON to stdout instead of a file".
+STDOUT_TARGET = Path("-")
 
 
 def _handle_info(args: argparse.Namespace) -> int:
@@ -66,12 +75,6 @@ def _handle_play(args: argparse.Namespace) -> int:
     verb = "Processed" if args.headless else "Displayed"
     print(f"{verb} {shown} frame(s) from {args.video}")
     return 0
-
-
-def _timestamp(seconds: float) -> str:
-    """Render seconds as HH:MM:SS, the way footage is usually referenced."""
-    whole = int(seconds)
-    return f"{whole // 3600:02d}:{(whole % 3600) // 60:02d}:{whole % 60:02d}"
 
 
 def _progress_for(stream: TextIO) -> Progress:
@@ -139,45 +142,57 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         progress=_progress_for(sys.stderr),
     )
 
-    print(f"source:   {stats.total} frames, {_timestamp(stats.source_seconds)}")
+    # JSON on stdout has to be the only thing there, or piping it into a parser
+    # fails; the human report steps aside to stderr in that case.
+    to_stdout = args.manifest == STDOUT_TARGET
+    report = sys.stderr if to_stdout else sys.stdout
+
+    print(
+        f"source:   {stats.total} frames, {format_timestamp(stats.source_seconds)}",
+        file=report,
+    )
     if stats.target_ratio is not None:
         print(
             f"auto:     --threshold {stats.threshold:.4f}"
-            f" for a {stats.target_ratio:.0%} target"
+            f" for a {stats.target_ratio:.0%} target",
+            file=report,
         )
-    print(f"events:   {len(stats.events)}")
+    print(f"events:   {len(stats.events)}", file=report)
 
     for number, event in enumerate(stats.events, start=1):
         print(
-            f"  {number:>3}. {_timestamp(event.start_seconds)}"
-            f" - {_timestamp(event.end_seconds)}"
-            f"  ({event.duration_seconds:.1f}s)"
+            f"  {number:>3}. {format_timestamp(event.start_seconds)}"
+            f" - {format_timestamp(event.end_seconds)}"
+            f"  ({event.duration_seconds:.1f}s)",
+            file=report,
         )
 
     print(
-        f"summary:  {stats.kept} frames, {_timestamp(stats.summary_seconds)}"
-        f" ({stats.kept_ratio:.1%} of source)"
+        f"summary:  {stats.kept} frames, {format_timestamp(stats.summary_seconds)}"
+        f" ({stats.kept_ratio:.1%} of source)",
+        file=report,
     )
 
-    _warn_if_target_missed(
-        stats, pad_seconds=args.pad, min_event_seconds=args.min_event
-    )
+    _warn_if_target_missed(stats, stream=report)
 
     if not stats.events:
-        print("no motion found: try a lower --threshold")
+        print("no motion found: try a lower --threshold", file=report)
     elif destination is None:
-        print("dry run: no file written")
+        print("dry run: no file written", file=report)
     else:
-        print(f"wrote:    {destination}")
+        print(f"wrote:    {destination}", file=report)
+
+    if args.manifest is not None:
+        manifest = build_manifest(stats, source=args.source, destination=destination)
+        if to_stdout:
+            dump_manifest(manifest, sys.stdout)
+        else:
+            write_manifest(manifest, args.manifest)
+            print(f"manifest: {args.manifest}", file=report)
     return 0
 
 
-def _warn_if_target_missed(
-    stats: SummaryStats,
-    *,
-    pad_seconds: float,
-    min_event_seconds: float,
-) -> None:
+def _warn_if_target_missed(stats: SummaryStats, *, stream: TextIO) -> None:
     """Explain an overshoot rather than quietly returning the wrong amount.
 
     Padding and the minimum event length quantise what is reachable, so a small
@@ -191,13 +206,14 @@ def _warn_if_target_missed(
     floor = smallest_possible_ratio(
         stats.total,
         fps=stats.fps,
-        pad_seconds=pad_seconds,
-        min_event_seconds=min_event_seconds,
+        pad_seconds=stats.pad_seconds,
+        min_event_seconds=stats.min_event_seconds,
     )
     if floor > stats.target_ratio:
         print(
             f"note:     one shortest event is already {floor:.0%} of this clip,"
-            f" so {stats.target_ratio:.0%} is unreachable"
+            f" so {stats.target_ratio:.0%} is unreachable",
+            file=stream,
         )
 
 
@@ -300,6 +316,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Longest edge motion is measured at, or 'auto' to step it up with "
         f"the source resolution ({tiers}, above that {MAX_COMPARISON_EDGE}) "
         "(default: auto).",
+    )
+    summarize_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Also write the events as a JSON manifest; '-' sends it to "
+        "stdout and moves the readable report to stderr.",
     )
     summarize_parser.add_argument(
         "--dry-run",

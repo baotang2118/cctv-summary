@@ -134,6 +134,74 @@ burned into the pixels - there is no way to strip it from an existing summary, s
 the original if you need unmarked footage. Playing a summary with `--speed` above 1
 stacks the fast-forward badge beneath the scissors rather than on top of it.
 
+### Event manifest
+
+The timestamps are often more useful than the clip - for an alerting script, an index, or
+another tool. `--manifest` writes them as JSON so nothing has to parse the printed table:
+
+```bash
+uv run cctv-summary summarize clip.mp4 summary.mp4 --manifest events.json
+```
+
+```json
+{
+  "manifest_version": 1,
+  "generator": "cctv-summary",
+  "generator_version": "0.11.0",
+  "generated_at": "2026-10-02T15:00:27.933584+00:00",
+  "source": {
+    "path": "clip.mp4",
+    "frames": 120,
+    "fps": 10.0,
+    "duration_seconds": 12.0
+  },
+  "summary": {
+    "path": "summary.mp4",
+    "frames": 96,
+    "duration_seconds": 9.6,
+    "kept_ratio": 0.8
+  },
+  "settings": {
+    "threshold": 0.01,
+    "target_ratio": null,
+    "pad_seconds": 2.0,
+    "min_event_seconds": 1.0,
+    "window": 30,
+    "tolerance": 25,
+    "comparison_edge": 256
+  },
+  "events": [
+    {
+      "index": 1,
+      "start_frame": 20,
+      "end_frame": 116,
+      "frames": 96,
+      "start_seconds": 2.0,
+      "end_seconds": 11.6,
+      "duration_seconds": 9.6,
+      "start_timestamp": "00:00:02",
+      "end_timestamp": "00:00:11"
+    }
+  ]
+}
+```
+
+Event times refer to the **original** recording, not to the summary. `settings` records
+what the run actually used, including the threshold `--target` solved for and the
+resolution tier `auto` chose, so a result can be reproduced or explained later.
+`manifest_version` is bumped only when the shape changes in a way that could break a
+consumer.
+
+`--manifest -` sends the JSON to stdout and moves the readable report to stderr, so it
+pipes straight into another tool:
+
+```bash
+uv run cctv-summary summarize clip.mp4 --dry-run --manifest - | jq '.events[].start_timestamp'
+```
+
+A manifest can be exported on its own with `--dry-run`, where no clip is written and
+`summary.path` is `null`.
+
 ### How it works
 
 Summarizing CCTV is mostly a problem of *not* losing the few seconds that matter. The
@@ -297,7 +365,7 @@ uv run ruff format .
 ## Layout
 
 ```
-src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py)
+src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py, manifest.py)
 scripts/            Linux camera recording and cron helpers
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
@@ -308,16 +376,16 @@ AGENTS.md           working notes for agents and contributors
 
 These are possible directions, not committed features. Roughly in priority order:
 
-1. Export a JSON or CSV event manifest for scripts and integrations.
-2. Generate an HTML contact sheet with one thumbnail and the original timestamp for
+1. Generate an HTML contact sheet with one thumbnail and the original timestamp for
    each event.
-3. Support regions of interest and exclusion masks to ignore roads, trees, timestamps,
+2. Support regions of interest and exclusion masks to ignore roads, trees, timestamps,
    and other noisy parts of a camera view.
-4. Optionally write each event as a separate, timestamped clip.
-5. Burn the original source timestamp into summarized frames.
-6. Generate motion heatmaps that show frequently active parts of the scene.
-7. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
+3. Optionally write each event as a separate, timestamped clip.
+4. Burn the original source timestamp into summarized frames.
+5. Generate motion heatmaps that show frequently active parts of the scene.
+6. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
    blur, or an unexpectedly dark image.
+7. Export the event manifest as CSV alongside the JSON.
 
 Potential performance work includes walking the ordered event list with a cursor rather
 than checking every event against every decoded frame.
