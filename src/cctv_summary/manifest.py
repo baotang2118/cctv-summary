@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from cctv_summary import __version__
+from cctv_summary.mask import describe
 from cctv_summary.summarize import SummaryStats
 from cctv_summary.video import VideoError
 
@@ -92,6 +93,8 @@ def build_manifest(
             "window": stats.window,
             "tolerance": stats.tolerance,
             "comparison_edge": stats.comparison_edge,
+            "watch": describe(stats.watch),
+            "ignore": describe(stats.ignore),
         },
         "events": [
             {

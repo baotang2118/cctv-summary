@@ -102,6 +102,14 @@ def _comparison_edge(value: str) -> int | None:
     return edge
 
 
+def _region(value: str) -> Region:
+    """Parse a --watch/--ignore rectangle given as fractions of the frame."""
+    try:
+        return parse_region(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def _keep_ratio(value: str) -> float:
     """Parse --target, accepting either ``10%`` or ``0.1``."""
     text = value.strip()
@@ -139,6 +147,8 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         pad_seconds=args.pad,
         min_event_seconds=args.min_event,
         comparison_edge=args.comparison_edge,
+        watch=tuple(args.watch or ()),
+        ignore=tuple(args.ignore or ()),
         progress=_progress_for(sys.stderr),
     )
 
@@ -151,6 +161,15 @@ def _handle_summarize(args: argparse.Namespace) -> int:
         f"source:   {stats.total} frames, {format_timestamp(stats.source_seconds)}",
         file=report,
     )
+    if stats.watch or stats.ignore:
+        # A mask silently changes what counts as motion, so say it ran rather
+        # than leaving a surprising event count unexplained.
+        parts = []
+        if stats.watch:
+            parts.append(f"{len(stats.watch)} watched")
+        if stats.ignore:
+            parts.append(f"{len(stats.ignore)} ignored")
+        print(f"mask:     {', '.join(parts)}", file=report)
     if stats.target_ratio is not None:
         print(
             f"auto:     --threshold {stats.threshold:.4f}"
@@ -316,6 +335,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Longest edge motion is measured at, or 'auto' to step it up with "
         f"the source resolution ({tiers}, above that {MAX_COMPARISON_EDGE}) "
         "(default: auto).",
+    )
+    summarize_parser.add_argument(
+        "--watch",
+        type=_region,
+        action="append",
+        default=None,
+        metavar="X,Y,W,H",
+        help="Only count motion inside this rectangle, as fractions of the "
+        "frame (e.g. 0,0.5,1,0.5 for the bottom half). Repeatable.",
+    )
+    summarize_parser.add_argument(
+        "--ignore",
+        type=_region,
+        action="append",
+        default=None,
+        metavar="X,Y,W,H",
+        help="Ignore motion inside this rectangle, as fractions of the frame "
+        "(e.g. a road or a burned-in clock). Repeatable, and applied after "
+        "--watch.",
     )
     summarize_parser.add_argument(
         "--manifest",

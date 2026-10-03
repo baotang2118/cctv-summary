@@ -62,7 +62,6 @@ decoding  [###########---------]  56% 626/1120 1s left
 ```
 
 ## Record a LAN camera
-
 On Linux, [`scripts/record-camera.sh`](./scripts/record-camera.sh) records a 20-minute
 MPEG-TS clip from an RTSP or other VLC-compatible camera URL. It requires `flock`,
 `timeout`, and `cvlc`. The lock is blocking, so an overlapping cron invocation waits for
@@ -261,10 +260,58 @@ Note that `--min-event` is applied *before* `--pad`. That ordering matters: padd
 | `--window` | `30` | Frames in the rolling background average |
 | `--tolerance` | `25` | Per-pixel intensity change counting as movement (0–255) |
 | `--comparison-edge` | `auto` | Longest edge motion is measured at, in pixels |
+| `--watch` | whole frame | Only count motion inside this rectangle. Repeatable |
+| `--ignore` | none | Ignore motion inside this rectangle. Repeatable |
 
 `--threshold` and `--tolerance` are easy to confuse. `--tolerance` decides whether a
 single *pixel* changed enough to count as movement; `--threshold` decides whether *enough
 pixels* moved for the frame to count as motion.
+
+### Ignoring noisy parts of the view
+
+Some things move all day and never matter: a road in the corner, a tree in the wind, or
+the camera's own burned-in clock, whose digits change every single second forever.
+
+The global knobs cannot fix any of these. Raising `--threshold` enough to silence a
+swaying branch also discards the distant figure you care about, because at ~1% of the
+frame a real person is barely above the noise to begin with. Localized noise needs a
+*spatial* answer, not a louder one.
+
+```bash
+# Ignore a burned-in clock in the top-right corner
+uv run cctv-summary summarize clip.mp4 --dry-run --ignore 0.55,0,0.45,0.18
+
+# Or watch only the doorway, and nothing else
+uv run cctv-summary summarize clip.mp4 --dry-run --watch 0,0.4,1,0.35
+```
+
+Rectangles are `X,Y,W,H` as **fractions of the frame**, from the top-left corner, so
+`0,0.5,1,0.5` is the bottom half and `0,0,1,1` is everything. Fractions rather than
+pixels, so the same region description works regardless of the camera's resolution.
+
+Both flags are repeatable. `--watch` is an allow-list and `--ignore` a deny-list; with
+both, the ignored regions are subtracted from the watched ones. Masking everything is an
+error rather than a clip with no motion in it.
+
+**It changes the decision, not the pixels.** The written summary is still untouched
+full-resolution source footage - the ignored tree still sways in the video you watch. The
+mask only decides which frames were worth keeping.
+
+Measured on a 320x240 clip with a ticking clock overlay and one person walking through:
+
+| | Idle frames score | Walker peak | Kept at `--threshold 0.002` |
+| --- | --- | --- | --- |
+| No mask | `0.00216` | `0.02384` | **100%** - the whole clip |
+| Clock ignored | `0.00000` | `0.02342` | **35%** - the real 7s event |
+
+The clock never scored above `0.01` on its own, so at the default threshold it looked
+harmless. What it actually did was put a permanent `0.002` floor under *every* frame,
+which is invisible until you lower `--threshold` to catch something distant - and then
+the summary becomes the entire recording. Masking it drops idle frames to exactly zero
+while leaving the walker essentially untouched.
+
+Because the score is a share of the *watched* area rather than the whole frame, your
+`--threshold` keeps meaning what it meant before you added a region.
 
 ### Tuning it automatically
 
@@ -327,6 +374,9 @@ silently discard every event - at `0.05` that same clip returned a single frame.
   `--comparison-edge` (e.g. `--comparison-edge 640`) so they survive the downscale, at
   the cost of analysis speed.
 - **Too many events?** Raise `--threshold`, or raise `--min-event` to ignore brief blips.
+- **One part of the view triggers constantly** - a road, a tree, a burned-in clock?
+  Exclude it with `--ignore 0.55,0,0.45,0.18`, or restrict scoring to what matters with
+  `--watch`. Raising `--threshold` instead would also discard real distant figures.
 - **Events cut short, or one person split in two?** Raise `--pad`.
 - **Grainy night footage triggering constantly?** Raise `--tolerance` to `40`+ so sensor
   noise stops counting as movement.
@@ -337,7 +387,8 @@ silently discard every event - at `0.05` that same clip returned a single frame.
   takes longer to absorb them - it costs no extra time, however large you make it.
 
 Motion here is raw pixel change, with no idea what a person is - rain, headlights and a
-swaying branch all count. Expect to tune per camera rather than globally.
+swaying branch all count. Expect to tune per camera rather than globally, and use
+`--watch` / `--ignore` for the parts of the view that are noisy by nature.
 
 The source is decoded twice, once to measure motion and once to write, because padding
 has to reach back before the moment motion was noticed. Expect roughly double the time of
@@ -365,7 +416,7 @@ uv run ruff format .
 ## Layout
 
 ```
-src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py, manifest.py)
+src/cctv_summary/   package source (cli.py, video.py, overlay.py, summarize.py, mask.py, diagnose.py, manifest.py)
 scripts/            Linux camera recording and cron helpers
 tests/              pytest suite
 pyproject.toml      project metadata, dependencies, tool config
@@ -376,16 +427,9 @@ AGENTS.md           working notes for agents and contributors
 
 These are possible directions, not committed features. Roughly in priority order:
 
-1. Generate an HTML contact sheet with one thumbnail and the original timestamp for
-   each event.
-2. Support regions of interest and exclusion masks to ignore roads, trees, timestamps,
-   and other noisy parts of a camera view.
-3. Optionally write each event as a separate, timestamped clip.
-4. Burn the original source timestamp into summarized frames.
-5. Generate motion heatmaps that show frequently active parts of the scene.
-6. Detect camera problems such as obstruction, sudden movement, frozen frames, severe
-   blur, or an unexpectedly dark image.
-7. Export the event manifest as CSV alongside the JSON.
+1. Burn the original source timestamp into summarized frames.
+2. Pick regions interactively from a frame grab, instead of by trial and error.
+3. Export the check report as JSON, the way `summarize --manifest` does.
 
 Potential performance work includes walking the ordered event list with a cursor rather
 than checking every event against every decoded frame.

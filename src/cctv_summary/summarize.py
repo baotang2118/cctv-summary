@@ -34,6 +34,7 @@ import cv2
 import numpy as np
 from cv2.typing import MatLike
 
+from cctv_summary.mask import Region, build_mask
 from cctv_summary.overlay import draw_summarized
 from cctv_summary.progress import NullProgress, Progress
 from cctv_summary.video import (
@@ -108,6 +109,25 @@ def comparison_edge_for(width: int, height: int) -> int:
     return MAX_COMPARISON_EDGE
 
 
+def comparison_size(width: int, height: int, edge: int) -> tuple[int, int]:
+    """Size a frame of ``width`` x ``height`` is compared at, as ``(w, h)``.
+
+    Shared with :func:`downscale_to_gray` so a mask built from these dimensions
+    lines up with the frames it will be applied to, pixel for pixel.
+    """
+    if width < 1 or height < 1:
+        raise ValueError(f"Frame size must be positive, got {width}x{height}")
+    if edge < 1:
+        raise ValueError(f"Comparison edge must be at least 1 pixel, got {edge}")
+
+    longest = max(height, width)
+    if longest <= edge:
+        return width, height
+
+    scale = edge / longest
+    return max(int(width * scale), 1), max(int(height * scale), 1)
+
+
 def downscale_to_gray(frame: MatLike, *, edge: int | None = None) -> np.ndarray:
     """Downscale and grayscale a frame for cheap, noise-tolerant comparison.
 
@@ -123,14 +143,9 @@ def downscale_to_gray(frame: MatLike, *, edge: int | None = None) -> np.ndarray:
     elif edge < 1:
         raise ValueError(f"Comparison edge must be at least 1 pixel, got {edge}")
 
-    longest = max(height, width)
-    if longest > edge:
-        scale = edge / longest
-        frame = cv2.resize(
-            frame,
-            (max(int(width * scale), 1), max(int(height * scale), 1)),
-            interpolation=cv2.INTER_AREA,
-        )
+    target = comparison_size(width, height, edge)
+    if target != (width, height):
+        frame = cv2.resize(frame, target, interpolation=cv2.INTER_AREA)
 
     if frame.ndim == 3:
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -142,11 +157,17 @@ def change_score(
     reference: np.ndarray,
     *,
     tolerance: int = DEFAULT_TOLERANCE,
+    mask: np.ndarray | None = None,
 ) -> float:
     """Fraction of pixels (0.0-1.0) that moved between two prepared frames.
 
     Both inputs must already be grayscale and the same shape; use
     :func:`downscale_to_gray` first.
+
+    ``mask`` restricts which pixels get a vote. The share is taken over the
+    *masked* area, not the whole frame: dividing by the full area instead would
+    scale every score down by however much was excluded, silently invalidating
+    a calibrated threshold the moment a region is added.
     """
     if current.shape != reference.shape:
         raise ValueError(
@@ -155,8 +176,20 @@ def change_score(
         )
 
     delta = cv2.absdiff(current.astype(np.uint8), reference.astype(np.uint8))
-    moved = np.count_nonzero(delta > tolerance)
-    return moved / delta.size
+    moved = delta > tolerance
+
+    if mask is None:
+        return np.count_nonzero(moved) / delta.size
+
+    if mask.shape != delta.shape:
+        raise ValueError(
+            f"Mask must match the compared frames, got {mask.shape} and {delta.shape}"
+        )
+
+    active = np.count_nonzero(mask)
+    if active == 0:
+        raise ValueError("Mask leaves no pixels to compare")
+    return np.count_nonzero(moved & mask) / active
 
 
 class RollingBackground:
@@ -268,6 +301,8 @@ class SummaryStats:
     window: int = DEFAULT_WINDOW
     tolerance: int = DEFAULT_TOLERANCE
     comparison_edge: int = MAX_COMPARISON_EDGE
+    watch: tuple[Region, ...] = ()
+    ignore: tuple[Region, ...] = ()
 
     @property
     def dropped(self) -> int:
@@ -298,6 +333,7 @@ def motion_scores(
     window: int = DEFAULT_WINDOW,
     tolerance: int = DEFAULT_TOLERANCE,
     comparison_edge: int | None = None,
+    mask: np.ndarray | None = None,
 ) -> Iterator[float]:
     """Yield the fraction of pixels moving in each frame, 0.0-1.0.
 
@@ -307,6 +343,10 @@ def motion_scores(
 
     ``comparison_edge`` caps the size frames are compared at; without one each
     frame's own resolution picks the tier.
+
+    ``mask`` restricts which pixels vote. It applies at scoring time only: the
+    rolling background still sees whole frames, which keeps its running total
+    exact and costs nothing, since masked pixels simply never get counted.
     """
     background = RollingBackground(window)
 
@@ -314,7 +354,7 @@ def motion_scores(
         gray = downscale_to_gray(frame, edge=comparison_edge)
         average = background.average
         score = (
-            change_score(gray, average, tolerance=tolerance)
+            change_score(gray, average, tolerance=tolerance, mask=mask)
             if average is not None
             else 0.0
         )
@@ -517,6 +557,8 @@ def summarize_video(
     pad_seconds: float = DEFAULT_PAD_SECONDS,
     min_event_seconds: float = DEFAULT_MIN_EVENT_SECONDS,
     comparison_edge: int | None = None,
+    watch: Sequence[Region] = (),
+    ignore: Sequence[Region] = (),
     progress: Progress | None = None,
 ) -> SummaryStats:
     """Write a copy of ``source`` containing only its motion events.
@@ -531,6 +573,11 @@ def summarize_video(
 
     ``comparison_edge`` overrides the resolution tier motion is measured at;
     without one it follows the source, which is what ``auto`` means on the CLI.
+
+    ``watch`` and ``ignore`` narrow *where* motion counts: an allow-list and a
+    deny-list of fractional rectangles. They answer the localised noise the
+    global knobs cannot, such as a road in the corner or a ticking clock
+    overlay. Only the decision is masked; the written clip is untouched.
 
     The source is decoded twice: once to score motion, once to write. Padding
     reaches backwards from the moment motion is noticed, and buffering an hour
@@ -567,6 +614,13 @@ def summarize_video(
         else comparison_edge_for(max(info.width, 1), max(info.height, 1))
     )
 
+    # Built once at the size frames are compared at, so it lines up pixel for
+    # pixel without being rescaled per frame.
+    mask_width, mask_height = comparison_size(
+        max(info.width, 1), max(info.height, 1), edge
+    )
+    mask = build_mask(mask_width, mask_height, watch=tuple(watch), ignore=tuple(ignore))
+
     reporter.start("analysing", info.frame_count)
     scores = []
     for score in motion_scores(
@@ -574,6 +628,7 @@ def summarize_video(
         window=window,
         tolerance=tolerance,
         comparison_edge=edge,
+        mask=mask,
     ):
         scores.append(score)
         reporter.advance()
@@ -623,6 +678,8 @@ def summarize_video(
         window=window,
         tolerance=tolerance,
         comparison_edge=edge,
+        watch=tuple(watch),
+        ignore=tuple(ignore),
     )
 
 

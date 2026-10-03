@@ -31,6 +31,7 @@ from cctv_summary.manifest import (
     format_timestamp,
     write_manifest,
 )
+from cctv_summary.mask import Region
 from cctv_summary.summarize import Event, SummaryStats
 from cctv_summary.video import VideoError
 
@@ -110,6 +111,8 @@ def test_manifest_records_the_settings_used():
         window=60,
         tolerance=40,
         comparison_edge=480,
+        watch=(Region(0.0, 0.5, 1.0, 0.5),),
+        ignore=(Region(0.0, 0.0, 0.1, 0.1),),
     )
 
     settings = build_manifest(stats, source="clip.avi")["settings"]
@@ -122,7 +125,16 @@ def test_manifest_records_the_settings_used():
         "window": 60,
         "tolerance": 40,
         "comparison_edge": 480,
+        "watch": [[0.0, 0.5, 1.0, 0.5]],
+        "ignore": [[0.0, 0.0, 0.1, 0.1]],
     }
+
+
+def test_manifest_renders_no_regions_as_empty_lists():
+    settings = build_manifest(stats_with_events(), source="clip.avi")["settings"]
+
+    assert settings["watch"] == []
+    assert settings["ignore"] == []
 
 
 def test_events_carry_frames_seconds_and_timestamps():

@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import pytest
 
+from cctv_summary.mask import Region, build_mask
 from cctv_summary.summarize import (
     DEFAULT_THRESHOLD,
     SOLVER_MIN_THRESHOLD,
@@ -29,6 +30,7 @@ from cctv_summary.summarize import (
     SummaryStats,
     change_score,
     comparison_edge_for,
+    comparison_size,
     detect_events,
     downscale_to_gray,
     keep_ratio_for,
@@ -42,6 +44,9 @@ from cctv_summary.video import VideoError, iter_frames, probe
 HEIGHT = 120
 WIDTH = 160
 FPS = 10.0
+
+LEFT_HALF = Region(0.0, 0.0, 0.5, 1.0)
+RIGHT_HALF = Region(0.5, 0.0, 0.5, 1.0)
 
 
 def frame(fill: int) -> np.ndarray:
@@ -89,6 +94,99 @@ def test_change_score_respects_tolerance():
 def test_change_score_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="must match"):
         change_score(np.zeros((4, 4), np.uint8), np.zeros((5, 5), np.uint8))
+
+
+def test_a_mask_excludes_motion_outside_it():
+    # Motion fills the left half; watching only the right half should see none.
+    still = downscale_to_gray(half_lit(0.0))
+    moved = downscale_to_gray(half_lit(0.5))
+    right_half = build_mask(moved.shape[1], moved.shape[0], watch=(RIGHT_HALF,))
+
+    assert change_score(still, moved, mask=right_half) == pytest.approx(0.0)
+
+
+def test_a_mask_counts_motion_inside_it():
+    still = downscale_to_gray(half_lit(0.0))
+    moved = downscale_to_gray(half_lit(0.5))
+    left_half = build_mask(moved.shape[1], moved.shape[0], watch=(LEFT_HALF,))
+
+    assert change_score(still, moved, mask=left_half) == pytest.approx(1.0, abs=0.02)
+
+
+def test_the_score_is_a_share_of_the_masked_area_not_the_frame():
+    # This is the load-bearing detail: dividing by the full frame would halve
+    # every score here and silently invalidate a calibrated --threshold.
+    still = downscale_to_gray(half_lit(0.0))
+    moved = downscale_to_gray(half_lit(0.5))
+    left_half = build_mask(moved.shape[1], moved.shape[0], watch=(LEFT_HALF,))
+
+    unmasked = change_score(still, moved)
+    masked = change_score(still, moved, mask=left_half)
+
+    assert unmasked == pytest.approx(0.5, abs=0.02)
+    assert masked == pytest.approx(1.0, abs=0.02)
+
+
+def test_masking_an_unaffected_area_leaves_the_score_alone():
+    quarter = downscale_to_gray(half_lit(0.25))
+    still = downscale_to_gray(half_lit(0.0))
+    # Ignore the right half, which never moves: the share over what remains is
+    # double, because the denominator shrank with it.
+    mask = build_mask(still.shape[1], still.shape[0], ignore=(RIGHT_HALF,))
+
+    assert change_score(still, quarter, mask=mask) == pytest.approx(0.5, abs=0.03)
+
+
+def test_change_score_rejects_a_mask_of_the_wrong_shape():
+    gray = downscale_to_gray(frame(10))
+
+    with pytest.raises(ValueError, match="Mask must match"):
+        change_score(gray, gray, mask=np.ones((3, 3), bool))
+
+
+def test_change_score_rejects_an_empty_mask():
+    gray = downscale_to_gray(frame(10))
+
+    with pytest.raises(ValueError, match="no pixels"):
+        change_score(gray, gray, mask=np.zeros(gray.shape, bool))
+
+
+def test_comparison_size_matches_what_downscaling_produces():
+    # A mask built from these dimensions has to line up pixel for pixel.
+    for width, height, edge in ((1920, 1080, 320), (640, 360, 256), (40, 50, 640)):
+        expected = downscale_to_gray(
+            np.zeros((height, width, 3), np.uint8), edge=edge
+        ).shape
+        assert comparison_size(width, height, edge) == (expected[1], expected[0])
+
+
+def test_comparison_size_leaves_small_frames_alone():
+    assert comparison_size(40, 50, 640) == (40, 50)
+
+
+def test_comparison_size_rejects_nonsense():
+    with pytest.raises(ValueError, match="must be positive"):
+        comparison_size(0, 10, 320)
+    with pytest.raises(ValueError, match="at least 1 pixel"):
+        comparison_size(10, 10, 0)
+
+
+def test_motion_scores_respects_a_mask():
+    # Brightness ramps only on the left; watching the right sees a still scene.
+    frames = []
+    for index in range(20):
+        img = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        img[:, : WIDTH // 2] = index * 10
+        frames.append(img)
+
+    sample = downscale_to_gray(frames[0])
+    right_half = build_mask(sample.shape[1], sample.shape[0], watch=(RIGHT_HALF,))
+
+    masked = list(motion_scores(frames, window=5, mask=right_half))
+    unmasked = list(motion_scores(frames, window=5))
+
+    assert max(masked) == pytest.approx(0.0)
+    assert max(unmasked) > 0.4
 
 
 def test_downscale_to_gray_shrinks_and_greyscales():
@@ -474,6 +572,59 @@ def test_summarize_records_the_settings_it_ran_with(sample_video):
     assert stats.pad_seconds == 0.5
     assert stats.min_event_seconds == 0
     assert stats.comparison_edge == 64
+
+
+def test_summarize_records_the_regions_it_ran_with(sample_video):
+    stats = summarize_video(
+        sample_video.path,
+        threshold=0.001,
+        min_event_seconds=0,
+        watch=(LEFT_HALF,),
+        ignore=(RIGHT_HALF,),
+    )
+
+    assert stats.watch == (LEFT_HALF,)
+    assert stats.ignore == (RIGHT_HALF,)
+
+
+def test_summarize_records_no_regions_by_default(sample_video):
+    stats = summarize_video(sample_video.path, threshold=0.001, min_event_seconds=0)
+
+    assert stats.watch == ()
+    assert stats.ignore == ()
+
+
+def test_ignoring_the_only_moving_area_finds_nothing(tmp_path):
+    # A clip where just the left strip flickers, standing in for a road or a
+    # burned-in clock: ignoring it should leave a scene with nothing happening.
+    noisy = tmp_path / "noisy.avi"
+    writer = cv2.VideoWriter(
+        str(noisy), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (WIDTH, HEIGHT)
+    )
+    if not writer.isOpened():
+        pytest.skip("No MJPG encoder available.")
+    for index in range(60):
+        img = np.full((HEIGHT, WIDTH, 3), 90, np.uint8)
+        img[:, : WIDTH // 5] = 255 if index % 2 else 0
+        writer.write(img)
+    writer.release()
+
+    unmasked = summarize_video(noisy, min_event_seconds=0)
+    masked = summarize_video(
+        noisy, min_event_seconds=0, ignore=(Region(0.0, 0.0, 0.25, 1.0),)
+    )
+
+    assert unmasked.events
+    assert not masked.events
+
+
+def test_a_mask_that_watches_nothing_is_refused(sample_video):
+    with pytest.raises(VideoError, match="no pixels to watch"):
+        summarize_video(
+            sample_video.path,
+            watch=(LEFT_HALF,),
+            ignore=(Region(0.0, 0.0, 1.0, 1.0),),
+        )
 
 
 def test_summarize_records_the_resolved_comparison_edge(sample_video):
