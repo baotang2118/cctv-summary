@@ -39,7 +39,8 @@ file in a window (badging the corner when `--speed` is above 1) or decodes headl
 (`--headless`, which reports progress since nothing else shows it is alive);
 `cctv-summary summarize` finds the stretches where something moves and
 writes them out as continuous clips, reporting progress as it goes, listing their
-timestamps, burning a scissors mark into every output frame, and optionally exporting the
+timestamps, burning a scissors mark into every output frame, optionally restricting where
+motion counts (`--watch` / `--ignore`), and optionally exporting the
 events as a JSON manifest (`--manifest`). Motion is raw pixel
 change — there is no object or person detection, so a swaying tree counts as an event.
 
@@ -67,6 +68,8 @@ uv run cctv-summary summarize SRC --target 10%  # solve --threshold for a keep s
 uv run cctv-summary summarize SRC DST --comparison-edge 640  # override the resolution tier
 uv run cctv-summary summarize SRC DST --manifest events.json  # JSON event manifest
 uv run cctv-summary summarize SRC --dry-run --manifest -      # manifest on stdout
+uv run cctv-summary summarize SRC --dry-run --ignore 0.55,0,0.45,0.18  # skip a noisy corner
+uv run cctv-summary summarize SRC --dry-run --watch 0,0.4,1,0.35       # score only a band
 uv run python -m cctv_summary  # module entry point
 ```
 
@@ -82,11 +85,13 @@ src/cctv_summary/cli.py        build_parser() + main(argv) -> int, subcommand ha
 src/cctv_summary/video.py      OpenCV layer: probe/iter_frames/play, VideoError, Display
 src/cctv_summary/overlay.py    corner badges (draw_fast_forward, draw_summarized)
 src/cctv_summary/summarize.py  motion scoring, event detection, threshold solver
+src/cctv_summary/mask.py       Region, build_mask: where motion is allowed to count
+src/cctv_summary/diagnose.py   camera faults: dark/blurry/obstructed/frozen/shaken
 src/cctv_summary/manifest.py   JSON event manifest (build/dump/write, format_timestamp)
 src/cctv_summary/progress.py   Progress protocol, TerminalProgress, NullProgress
 scripts/record-camera.sh       Linux cron helper: locked 20-minute VLC recordings
 tests/conftest.py              sample_video fixture (synthesises a small MJPG clip)
-tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress/_manifest.py)
+tests/                         pytest suite (test_cli/_video/_overlay/_summarize/_progress/_manifest/_mask/_diagnose.py)
 pyproject.toml                 single source of truth for metadata, deps, ruff, pytest
 LICENSE                        GNU GPL version 3 (GPL-3.0-only)
 uv.lock                        committed lockfile — regenerate with uv, never hand-edit
@@ -157,6 +162,35 @@ describe a result without the caller re-threading arguments.
 
 **`tolerance` and `threshold` are different knobs.** `tolerance` (0–255) is "did *this
 pixel* move"; `threshold` (0–1) is "did *enough pixels* move". Do not conflate them.
+
+**Masks answer localised noise; the global knobs cannot.** A road, a tree, or a burned-in
+clock changes forever, and raising `threshold`/`tolerance` enough to silence one also
+discards the distant figure that matters. `mask.py` narrows *where* motion counts:
+`Region` is a rectangle in **fractions** of the frame (so one description survives a
+resolution change), `--watch` allow-lists and `--ignore` deny-lists, and ignores are
+subtracted from watches. A mask covering everything raises rather than scoring `NaN`.
+
+Three things there are load-bearing:
+
+- **The denominator is the masked area, not the frame.** `change_score()` divides by the
+  active pixel count. Dividing by `delta.size` instead would scale every score down by
+  whatever was excluded, silently invalidating the calibrated `DEFAULT_THRESHOLD` the
+  moment a region is added. `test_the_score_is_a_share_of_the_masked_area_not_the_frame`
+  pins this.
+- **The mask is built once, at the comparison size.** `comparison_size()` is factored out
+  of `downscale_to_gray()` so both agree pixel for pixel; `summarize_video()` resolves it
+  alongside the edge. Rescaling a mask per frame would be both slower and a chance to
+  drift out of alignment.
+- **The rolling background still sees whole frames.** Masking at count time is equivalent
+  and keeps `RollingBackground`'s exact running total untouched. Do not mask the frames
+  going into it.
+
+Measured on a 320x240 clip with a ticking clock overlay and one walker: the clock put a
+constant `0.00216` floor on every idle frame while never clearing `0.01` by itself, so it
+looked harmless at the default threshold. At `--threshold 0.002` it kept **100%** of the
+clip; ignoring its corner dropped idle frames to exactly `0.0`, left the walker at
+`0.02342` (from `0.02384`), and recovered the real 7-second event at 35%. **The mask
+changes the decision, not the pixels** — output stays untouched source footage.
 
 **The comparison size is tiered, not a constant.** `downscale_to_gray()` caps the long
 edge before diffing, and `comparison_edge_for(width, height)` picks that cap from the
@@ -244,10 +278,13 @@ costs more than the tiny 320x180 operations save.
 - **Selection logic stays pure.** `motion_scores()` and `detect_events()` take and return
   plain values with no file I/O, so event logic is testable with a sketched signal
   (`"...###..."`) instead of real footage. Keep decoding and encoding in
-  `summarize_video()`.
-- **Errors.** `video.py`, `summarize.py`, and `manifest.py` raise `VideoError` for
-  anything a user can cause (missing file, unreadable container, bad
-  speed/threshold/window, no GUI, missing codec, unwritable manifest path). `main()`
+  `summarize_video()`. `mask.py` is pure too: it builds arrays from numbers and never
+  touches a file, and so is `detect_faults()`, which takes readings rather than frames.
+- **Errors.** `video.py`, `summarize.py`, `mask.py`, `diagnose.py`, and `manifest.py`
+  raise `VideoError`
+  for anything a user can cause (missing file, unreadable container, bad
+  speed/threshold/window, no GUI, missing codec, unwritable manifest path, a mask that
+  watches nothing, a nonsense fault threshold). `main()`
   catches it, prints `error: ...` to stderr, and returns `1`. Never let
   a raw `cv2.error` reach the user.
 - **Drawing lives in `overlay.py`.** Annotation functions take a frame, return a new one,
@@ -276,7 +313,8 @@ costs more than the tiny 320x180 operations save.
 - **The manifest is data, not a rendering of the table.** `manifest.py` builds a plain
   dict from a `SummaryStats` and writes it with `json`; it does no video work and never
   prints. `MANIFEST_VERSION` is bumped only when the shape changes in a way that could
-  break a consumer. `format_timestamp()` lives there and the CLI table uses it, so both
+  break a consumer — *adding* a key (as `watch`/`ignore` did) is not one of those.
+  `format_timestamp()` lives there and the CLI table uses it, so both
   renderings of a run agree. **`--manifest -` moves the readable report to stderr** —
   JSON on stdout has to be the only thing there or piping it into a parser fails.
 - **Keep GUI out of logic.** Playback writes to the `Display` protocol  (`show`/`wait`/`close`), with `WindowDisplay` (real `cv2.imshow`) and `NullDisplay`
@@ -338,6 +376,10 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 - Manifest shape is tested from a hand-built `SummaryStats`, not from decoded footage;
   `build_manifest()` is pure, so only the CLI tests need a real clip. Pass
   `generated_at=` to assert on the timestamp.
+- Mask behaviour is tested on `half_lit()` frames, where the moving share is known
+  exactly, so a wrong denominator shows up as a wrong number rather than a vague
+  "fewer events". `tests/test_mask.py` covers the geometry; `tests/test_summarize.py`
+  covers what it does to scores.
 - **Tests must never open a window.** Use `headless=True`, pass a fake `Display` to
   `play()`, or monkeypatch `cctv_summary.cli.play`. `tests/test_video.py::FakeDisplay`
   is the reference fake and can simulate a quit key.
@@ -350,15 +392,22 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
 
 ## Next steps
 
-**Decided:** the app reads and plays video with OpenCV, and summarizes by detecting
-motion events and keeping them as continuous clips. Those layers exist in `video.py` and
-`summarize.py`, with frame annotations in `overlay.py` and a JSON event manifest in
-`manifest.py`. Frame-by-frame dropping was tried
-first and replaced: it produced scattered, unwatchable stills.
+**Decided:** the app reads and plays video with OpenCV, summarizes by detecting
+motion events and keeping them as continuous clips, and checks for camera faults. Those
+layers exist in `video.py` and
+`summarize.py`, with frame annotations in `overlay.py`, spatial masks in `mask.py`,
+camera diagnostics in `diagnose.py`, and a
+JSON event manifest in `manifest.py`. Frame-by-frame dropping was tried
+first and replaced: it produced scattered, unwatchable stills. Regions are specified as
+fractional rectangles on the command line; a mask image and an interactive picker were
+both considered and not taken, the picker because it would need a GUI session the project
+keeps optional. Fault checking is its own subcommand rather than a warning inside
+`summarize`, because it answers a different question and fails in the opposite direction.
 
 **Still undecided:** whether to go beyond raw pixel motion — object or person detection
 (so a swaying tree stops counting as an event), keyframe thumbnails, burned-in
-timestamps, text summaries, a CSV manifest alongside the JSON one, and whether live RTSP
+timestamps, text summaries, a CSV manifest alongside the JSON one, a JSON report for
+`check`, and whether live RTSP
 input is in scope. Also unresolved: how
 to pick a threshold automatically instead of asking the user to tune it per camera.
 

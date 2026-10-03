@@ -197,6 +197,121 @@ def test_summarize_surfaces_video_errors(tmp_path, capsys):
     assert "error:" in capsys.readouterr().err
 
 
+def test_watch_and_ignore_default_to_nothing():
+    args = build_parser().parse_args(["summarize", "clip.avi", "--dry-run"])
+
+    assert args.watch is None
+    assert args.ignore is None
+
+
+def test_watch_accepts_fractional_coordinates():
+    args = build_parser().parse_args(
+        ["summarize", "clip.avi", "--dry-run", "--watch", "0,0.5,1,0.5"]
+    )
+
+    assert args.watch == [Region(0.0, 0.5, 1.0, 0.5)]
+
+
+def test_watch_and_ignore_are_repeatable():
+    args = build_parser().parse_args(
+        [
+            "summarize",
+            "clip.avi",
+            "--dry-run",
+            "--watch",
+            "0,0,0.5,1",
+            "--watch",
+            "0.5,0,0.5,1",
+            "--ignore",
+            "0,0,0.1,0.1",
+        ]
+    )
+
+    assert len(args.watch) == 2
+    assert len(args.ignore) == 1
+
+
+@pytest.mark.parametrize(
+    "value", ["0,0,1", "0,0,1,1,1", "left,0,1,1", "0,0,2,1", "0.8,0,0.5,1", "0,0,0,1"]
+)
+def test_regions_reject_nonsense(value, capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(
+            ["summarize", "clip.avi", "--dry-run", "--watch", value]
+        )
+
+    assert excinfo.value.code == 2
+    assert "--watch" in capsys.readouterr().err
+
+
+def test_summarize_reports_that_a_mask_was_applied(sample_video, capsys):
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--watch",
+                "0,0,0.5,1",
+                "--ignore",
+                "0,0,0.1,0.1",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "mask:" in out
+    assert "1 watched" in out
+    assert "1 ignored" in out
+
+
+def test_summarize_stays_quiet_about_the_mask_without_one(sample_video, capsys):
+    main(["summarize", str(sample_video.path), "--dry-run"])
+
+    assert "mask:" not in capsys.readouterr().out
+
+
+def test_summarize_surfaces_an_empty_mask(sample_video, capsys):
+    assert (
+        main(
+            [
+                "summarize",
+                str(sample_video.path),
+                "--dry-run",
+                "--watch",
+                "0,0,0.5,1",
+                "--ignore",
+                "0,0,1,1",
+            ]
+        )
+        == 1
+    )
+    assert "error:" in capsys.readouterr().err
+
+
+def test_manifest_records_the_regions(sample_video, tmp_path):
+    manifest_path = tmp_path / "events.json"
+
+    main(
+        [
+            "summarize",
+            str(sample_video.path),
+            "--dry-run",
+            "--watch",
+            "0,0.5,1,0.5",
+            "--ignore",
+            "0,0,0.1,0.1",
+            "--manifest",
+            str(manifest_path),
+        ]
+    )
+
+    settings = json.loads(manifest_path.read_text(encoding="utf-8"))["settings"]
+    assert settings["watch"] == [[0.0, 0.5, 1.0, 0.5]]
+    assert settings["ignore"] == [[0.0, 0.0, 0.1, 0.1]]
+
+
 def test_summarize_writes_a_manifest(sample_video, tmp_path, capsys):
     manifest_path = tmp_path / "events.json"
 
