@@ -61,6 +61,118 @@ drawn. They report progress instead, since nothing else shows the run is alive:
 decoding  [###########---------]  56% 626/1120 1s left
 ```
 
+## Check a camera is working
+
+Summarizing answers "what happened". This answers "can this camera still see anything" -
+a different question that fails in the opposite direction, because a sprayed-over lens
+produces a beautifully quiet summary.
+
+```bash
+uv run cctv-summary check path/to/clip.mp4
+```
+
+```
+source:   1120 frames, 00:00:37
+typical:  luminance 107.2, detail 315.1
+faults:   0
+ok:       no camera faults found
+```
+
+It looks for five faults, all from a single decode pass:
+
+| Fault | Means | Measured by |
+| --- | --- | --- |
+| `dark` | Lens capped, sensor failed, illuminator dead | Mean grey level |
+| `blurry` | Out of focus, or a filthy lens | Variance of the Laplacian |
+| `obstructed` | Something covering the lens | Share of the frame with no local contrast |
+| `frozen` | Dead feed repeating its last picture | Byte-identical consecutive frames |
+| `shaken` | Camera knocked or repositioned | Share of pixels changing at once |
+
+Faults are reported as timestamped spans, and **the exit code is non-zero when any are
+found**, so a cron job needs no output parsing:
+
+```bash
+uv run cctv-summary check "$clip" || echo "camera needs attention" | mail -s alert me@example.com
+```
+
+```
+source:   600 frames, 00:01:00
+typical:  luminance 6.2, detail 0.2
+faults:   2
+    1. dark        00:00:00 - 00:00:06  (6.0s)  luminance 6.17
+    2. obstructed  00:00:00 - 00:00:06  (6.0s)  flat 1
+affected: 60 frames (100.0% of source)
+```
+
+An unreadable file exits non-zero too. Both mean the same thing to a monitoring script:
+this camera needs looking at.
+
+The `typical:` line reports the clip's median readings, so you can see how much headroom
+a healthy camera has before anything trips - useful for tuning per camera.
+
+### What these checks can and cannot tell you
+
+**Faults overlap, deliberately.** A capped lens is dark *and* featureless, and nothing
+here can distinguish a cap from a dead sensor, so it reports both rather than guessing.
+The one exception is blur, which is suppressed when the picture is too dark or too flat
+to judge focus at all - a black frame has no edges either, and calling it "out of focus"
+would send someone to adjust a lens that is working fine.
+
+**`obstructed` is a guess about a plain-looking frame.** With no reference image of the
+healthy view, a genuinely featureless scene - a blank wall, fog, an empty overcast sky -
+looks exactly like a covered lens. Raise `--obstruction` on cameras that legitimately
+watch very plain scenes.
+
+**`shaken` sees any abrupt whole-view change**, not only camera movement. Lights
+switching on trip it: measured on a test clip, a sudden 40-level brightness step changed
+100% of pixels at once, which is indistinguishable from the camera being knocked.
+
+**A still scene is not a frozen one.** Freeze detection requires *byte-identical* frames,
+not merely similar ones, because live sensors always dither with noise. A locked-off
+camera watching an empty corridor still varies frame to frame; a repeated picture does
+not.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--dark` | `20` | Mean grey level below which the picture is unusable (0–255) |
+| `--blur` | `15` | Laplacian variance below which the image is out of focus |
+| `--obstruction` | `0.9` | Share of featureless frame reading as a covered lens (0–1) |
+| `--shake` | `0.2` | Share of pixels changing at once that means the camera moved |
+| `--min-fault` | `1.0` | Ignore faults shorter than this, in seconds |
+| `--freeze` | `2.0` | Seconds of identical picture before the feed counts as frozen |
+| `--comparison-edge` | `auto` | Longest edge the checks measure at, in pixels |
+
+**Where the defaults came from.** Measured on a 320x240 synthetic corridor, healthy and
+then broken five ways:
+
+| Clip | Luminance | Detail | Flat share | Peak change |
+| --- | --- | --- | --- | --- |
+| Healthy (person walking) | `109.3` | `126.5` | `0.686` | `0.019` |
+| Blacked out | `6.2` | `0.2` | `1.000` | – |
+| Badly defocused | `109.2` | `0.9` | `0.823` | – |
+| Lens sprayed over | `139.5` | `0.4` | `1.000` | – |
+| Knocked sideways | – | – | – | `0.365` |
+
+The gap between a defocused `0.823` and a covered `1.000` is what keeps `--obstruction`
+at `0.9` from reporting a soft-focus camera as a blocked one - they need different fixes.
+Checked against two real cameras with no false positives: 1280x720 footage gave luminance
+`107.2` and detail `315.1`, and a 2320x2320 fisheye gave `93.8` and `1832.0`. Detail
+varies enormously with scene and resolution, which is why the threshold sits far below
+both rather than near either.
+
+`--shake` is set from the healthy floor rather than the size of a knock, because
+displacement does **not** map onto change monotonically: shifting that corridor by 22%
+of its width changed `0.369` of the pixels, but shifting it by 50% changed only `0.227`,
+because a self-similar scene realigns with itself.
+
+Faults are never padded or merged the way motion events are. A fault's edges are evidence
+about the camera, and widening them would misreport when the picture actually came back.
+
+Checking decodes the source **once**, unlike summarizing, which has to decode twice. On a
+1120-frame 720p clip the whole check took 5.5s - decode 47%, downscaling 33%, and the
+five measurements the rest. Expect roughly half the time of a summarize run on the same
+file.
+
 ## Record a LAN camera
 On Linux, [`scripts/record-camera.sh`](./scripts/record-camera.sh) records a 20-minute
 MPEG-TS clip from an RTSP or other VLC-compatible camera URL. It requires `flock`,
@@ -146,7 +258,7 @@ uv run cctv-summary summarize clip.mp4 summary.mp4 --manifest events.json
 {
   "manifest_version": 1,
   "generator": "cctv-summary",
-  "generator_version": "0.11.0",
+  "generator_version": "0.13.0",
   "generated_at": "2026-10-02T15:00:27.933584+00:00",
   "source": {
     "path": "clip.mp4",
@@ -167,7 +279,9 @@ uv run cctv-summary summarize clip.mp4 summary.mp4 --manifest events.json
     "min_event_seconds": 1.0,
     "window": 30,
     "tolerance": 25,
-    "comparison_edge": 256
+    "comparison_edge": 256,
+    "watch": [],
+    "ignore": [[0.55, 0.0, 0.45, 0.18]]
   },
   "events": [
     {
@@ -436,8 +550,9 @@ than checking every event against every decoded frame.
 
 ## Status
 
-Reading, playing, and motion-event summarization work. Motion is raw pixel change -
-there is no object or person detection, scene segmentation, or text summary yet.
+Reading, playing, motion-event summarization, and camera fault checks work. Motion is raw
+pixel change - there is no object or person detection, scene segmentation, or text
+summary yet.
 
 ## License
 

@@ -33,10 +33,13 @@ Non-negotiable. Apply these to **every** code change, however small.
 
 `cctv-summary` is intended to become summarization tooling for CCTV footage.
 
-**Status: video I/O and motion-event summarization work.** The app reads and plays video
+**Status: video I/O, motion-event summarization, and camera fault checks work.** The app
+reads and plays video
 with OpenCV. `cctv-summary info` prints container metadata; `cctv-summary play` shows a
 file in a window (badging the corner when `--speed` is above 1) or decodes headless
 (`--headless`, which reports progress since nothing else shows it is alive);
+`cctv-summary check` looks for a dark, blurred, covered, frozen, or knocked camera and
+exits non-zero when it finds one;
 `cctv-summary summarize` finds the stretches where something moves and
 writes them out as continuous clips, reporting progress as it goes, listing their
 timestamps, burning a scissors mark into every output frame, optionally restricting where
@@ -62,6 +65,8 @@ uv run cctv-summary info FILE  # container metadata
 uv run cctv-summary play FILE  # playback window (q or Esc to quit)
 uv run cctv-summary play FILE --speed 4    # faster, badges the top-right corner
 uv run cctv-summary play FILE --headless   # no window, progress on stderr
+uv run cctv-summary check FILE             # camera faults; non-zero exit if any found
+uv run cctv-summary check FILE --dark 30   # per-camera thresholds
 uv run cctv-summary summarize SRC DST      # motion events only, progress on stderr
 uv run cctv-summary summarize SRC --dry-run  # report keep/drop without writing
 uv run cctv-summary summarize SRC --target 10%  # solve --threshold for a keep share
@@ -263,6 +268,74 @@ GPU is not the answer here: the PyPI wheel has no CUDA (`cv2.cuda` reports 0 dev
 and OpenCL `UMat` measured *slower* than NumPy (513 vs 630 fps) because the transfer
 costs more than the tiny 320x180 operations save.
 
+## How checking works
+
+`diagnose.py` answers a different question from summarization — "can this camera still
+see anything" rather than "what happened" — and the two fail in opposite directions: a
+sprayed-over lens produces a beautifully quiet summary. Hence a separate module and the
+`check` subcommand rather than a warning bolted onto `summarize`.
+
+`frame_metrics()` reads five numbers from each frame in **one** decode pass (summarizing
+needs two; checking writes nothing, so it needs one). All five come off the same
+downscaled gray frame the motion path uses, so the thresholds mean the same thing across
+resolutions. `detect_faults()` then groups them, and is pure — tests build `FrameMetrics`
+directly instead of synthesising footage.
+
+| Fault | Signal | Default |
+| --- | --- | --- |
+| `dark` | mean grey level | `< 20` |
+| `blurry` | variance of the Laplacian | `< 15` |
+| `obstructed` | share of frame with no local contrast | `>= 0.9` |
+| `frozen` | byte-identical consecutive frames | `>= 2s` |
+| `shaken` | share of pixels changing at once | `>= 0.2` |
+
+Measured on a 320x240 synthetic corridor — healthy, then broken five ways:
+
+| Clip | luminance | detail | flat | peak change |
+| --- | --- | --- | --- | --- |
+| healthy (walker) | 109.3 | 126.5 | 0.686 | 0.019 |
+| blacked out | 6.2 | 0.2 | 1.000 | – |
+| defocused | 109.2 | 0.9 | 0.823 | – |
+| lens sprayed | 139.5 | 0.4 | 1.000 | – |
+| knocked 22% sideways | – | – | – | 0.365 |
+
+Real footage, two different cameras, no false positives: 1280x720 gave luminance 107.2
+and detail 315.1; a 2320x2320 fisheye over 24 minutes gave 93.8 and 1832.0. Detail swings
+by 6x between real cameras, so the threshold is set far below both rather than near
+either.
+
+Five things here are load-bearing:
+
+- **Blur is suppressed when the picture is dark or flat.** A black or covered frame has
+  no edges either, so an ungated blur check fires on both and sends someone to adjust a
+  lens that is working. Dark and `obstructed` stay independent, because a capped lens
+  genuinely is both and nothing here can tell a cap from a dead sensor.
+- **`--obstruction 0.9` sits in the gap between defocused `0.823` and covered `1.000`.**
+  That gap is the only thing separating "refocus it" from "go clean it". Do not widen the
+  threshold without re-measuring both.
+- **Freeze means byte-identical, not similar.** Live sensors always dither, so an exact
+  match proves the stream repeated rather than that the scene held still. A tolerance
+  here would flag every locked-off camera watching an empty room.
+- **`shake` is set from the healthy floor, not the knock size.** Displacement does *not*
+  map monotonically onto change: 22% sideways scored 0.369 but 50% scored only 0.227,
+  because a self-similar scene realigns with itself. Walking peaked at 0.019, so 0.2 is
+  ten times the floor. It also catches any abrupt whole-view change — a 40-level
+  brightness step changed 100% of pixels, so lights coming on read as a knock.
+- **Faults are never padded or merged.** Motion events are padded so people are seen
+  walking in; a fault's edges are *evidence about the camera*, and widening them would
+  misreport when the picture came back. `shaken` is additionally exempt from
+  `--min-fault`, because a knock lasts one frame by nature.
+
+`check` exits non-zero when it finds anything, and an unreadable file exits non-zero too.
+Both mean the same thing to a cron job, which is the point.
+
+**Where the time goes.** Profiled on the same 1120-frame 720p clip the summarize numbers
+use: decode **47%**, `downscale_to_gray` **33%**, `flat_fraction` **9%**, `detail_score`
+**9%**, frame differencing **2%** — 5.5s total. The two new measurements add roughly 18%
+on top of the work a motion pass already does, and the whole check still costs about
+*half* of summarizing, which decodes twice. Both new metrics scale with the comparison
+tier, so a 4K source pays about 4x the per-frame pixel cost.
+
 ## Conventions
 
 - **CLI shape.** Argument wiring lives in `build_parser()`; each subcommand registers its
@@ -287,6 +360,9 @@ costs more than the tiny 320x180 operations save.
   watches nothing, a nonsense fault threshold). `main()`
   catches it, prints `error: ...` to stderr, and returns `1`. Never let
   a raw `cv2.error` reach the user.
+- **Exit codes carry meaning for `check` only.** `check` returns `FAULTS_FOUND` (1) when
+  it finds faults, the same code an error returns, because a monitoring script wants to
+  be woken for either. Other subcommands return 0 unless something went wrong.
 - **Drawing lives in `overlay.py`.** Annotation functions take a frame, return a new one,
   and **must not mutate the input** — OpenCV reuses decode buffers, so draw on
   `frame.copy()`. Sizes derive from the frame dimensions so markers scale with
@@ -369,7 +445,14 @@ existing patterns in `tests/test_cli.py` and `tests/test_video.py`:
   committed** — keep it that way.
 - **`sample_video` is never still.** It ramps brightness every frame, so it always
   registers motion, even at `--threshold 1.0`. Tests about *absence* of motion must
-  synthesise their own static clip.
+  synthesise their own static clip. It is also a **flat colour field**, so `check`
+  correctly reports it as an obstructed lens — anything testing healthy footage needs its
+  own textured clip (`_write_textured_clip` in `tests/test_cli.py`, `textured()` in
+  `tests/test_diagnose.py`).
+- Fault logic is tested from hand-built `FrameMetrics` via the `healthy(**overrides)` /
+  `series(n, **overrides)` helpers, the same way event logic uses `signal("..##..")`:
+  hysteresis-free grouping, gating, and minimum durations are about the readings, not the
+  pixels. Only the handful of `diagnose_video` tests need real footage.
 - Test event logic with a sketched signal via the `signal("..###..")` helper rather than
   real footage: the interesting cases (hysteresis, merging, blip rejection) are about the
   score sequence, not pixels.

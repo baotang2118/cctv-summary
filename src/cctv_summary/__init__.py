@@ -17,6 +17,6 @@
 
 """cctv-summary: summarization tooling for CCTV footage."""
 
-__version__ = "0.11.0"
+__version__ = "0.13.0"
 
 __all__ = ["__version__"]
