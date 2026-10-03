@@ -26,12 +26,22 @@ from pathlib import Path
 from typing import TextIO
 
 from cctv_summary import __version__
+from cctv_summary.diagnose import (
+    DEFAULT_BLUR_DETAIL,
+    DEFAULT_DARK_LUMINANCE,
+    DEFAULT_FLAT_FRACTION,
+    DEFAULT_FREEZE_SECONDS,
+    DEFAULT_MIN_FAULT_SECONDS,
+    DEFAULT_SHAKE_CHANGE,
+    diagnose_video,
+)
 from cctv_summary.manifest import (
     build_manifest,
     dump_manifest,
     format_timestamp,
     write_manifest,
 )
+from cctv_summary.mask import Region, parse_region
 from cctv_summary.progress import NullProgress, Progress, TerminalProgress
 from cctv_summary.summarize import (
     COMPARISON_EDGE_TIERS,
@@ -52,6 +62,10 @@ TARGET_OVERSHOOT = 1.5
 
 # --manifest value that means "write the JSON to stdout instead of a file".
 STDOUT_TARGET = Path("-")
+
+# `check` reports faults by exiting non-zero, so a cron job needs no parsing.
+# Errors return the same code: both mean "this camera needs attention".
+FAULTS_FOUND = 1
 
 
 def _handle_info(args: argparse.Namespace) -> int:
@@ -75,6 +89,50 @@ def _handle_play(args: argparse.Namespace) -> int:
     verb = "Processed" if args.headless else "Displayed"
     print(f"{verb} {shown} frame(s) from {args.video}")
     return 0
+
+
+def _handle_check(args: argparse.Namespace) -> int:
+    diagnosis = diagnose_video(
+        args.video,
+        dark_luminance=args.dark,
+        blur_detail=args.blur,
+        flat_share=args.obstruction,
+        shake_change=args.shake,
+        min_fault_seconds=args.min_fault,
+        freeze_seconds=args.freeze,
+        comparison_edge=args.comparison_edge,
+        progress=_progress_for(sys.stderr),
+    )
+
+    print(
+        f"source:   {diagnosis.total} frames,"
+        f" {format_timestamp(diagnosis.source_seconds)}"
+    )
+    # Healthy medians say how much headroom the thresholds have, which is what
+    # a borderline camera needs before anything has actually tripped.
+    print(
+        f"typical:  luminance {diagnosis.luminance_median:.1f},"
+        f" detail {diagnosis.detail_median:.1f}"
+    )
+    print(f"faults:   {len(diagnosis.faults)}")
+
+    for number, fault in enumerate(diagnosis.faults, start=1):
+        print(
+            f"  {number:>3}. {fault.kind:<11}"
+            f" {format_timestamp(fault.start_seconds)}"
+            f" - {format_timestamp(fault.end_seconds)}"
+            f"  ({fault.duration_seconds:.1f}s)"
+            f"  {fault.metric} {fault.value:.3g}"
+        )
+
+    if diagnosis.healthy:
+        print("ok:       no camera faults found")
+        return 0
+
+    share = diagnosis.faulty_frames / diagnosis.total if diagnosis.total else 0.0
+    plural = "" if diagnosis.faulty_frames == 1 else "s"
+    print(f"affected: {diagnosis.faulty_frames} frame{plural} ({share:.1%} of source)")
+    return FAULTS_FOUND
 
 
 def _progress_for(stream: TextIO) -> Progress:
@@ -274,6 +332,69 @@ def build_parser() -> argparse.ArgumentParser:
         "possible. --speed is ignored in this mode.",
     )
     play_parser.set_defaults(handler=_handle_play)
+
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Look for camera faults: a dark, blurred, covered, frozen, or "
+        "knocked camera. Exits non-zero when any are found.",
+    )
+    check_parser.add_argument("video", type=Path, help="Video file to check.")
+    check_parser.add_argument(
+        "--dark",
+        type=float,
+        default=DEFAULT_DARK_LUMINANCE,
+        metavar="LEVEL",
+        help="Mean grey level below which the picture is too dark to use, "
+        "0-255 (default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--blur",
+        type=float,
+        default=DEFAULT_BLUR_DETAIL,
+        metavar="DETAIL",
+        help="Laplacian variance below which the image is out of focus "
+        "(default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--obstruction",
+        type=float,
+        default=DEFAULT_FLAT_FRACTION,
+        metavar="SHARE",
+        help="Share of the frame with no local contrast that reads as a "
+        "covered lens, 0-1 (default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--shake",
+        type=float,
+        default=DEFAULT_SHAKE_CHANGE,
+        metavar="SHARE",
+        help="Share of pixels changing at once that means the camera moved "
+        "rather than the scene, 0-1 (default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--min-fault",
+        type=float,
+        default=DEFAULT_MIN_FAULT_SECONDS,
+        metavar="SECONDS",
+        help="Ignore faults shorter than this (default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--freeze",
+        type=float,
+        default=DEFAULT_FREEZE_SECONDS,
+        metavar="SECONDS",
+        help="Seconds of a byte-identical picture before the feed counts as "
+        "frozen (default: %(default)s).",
+    )
+    check_parser.add_argument(
+        "--comparison-edge",
+        type=_comparison_edge,
+        default=None,
+        metavar="PIXELS",
+        help="Longest edge the checks measure at, or 'auto' to follow the "
+        "source resolution (default: auto).",
+    )
+    check_parser.set_defaults(handler=_handle_check)
 
     summarize_parser = subparsers.add_parser(
         "summarize",

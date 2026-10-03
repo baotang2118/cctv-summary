@@ -25,8 +25,36 @@ import pytest
 
 from cctv_summary import __version__
 from cctv_summary.cli import _progress_for, build_parser, main
+from cctv_summary.diagnose import DEFAULT_DARK_LUMINANCE
+from cctv_summary.mask import Region
 from cctv_summary.progress import NullProgress, TerminalProgress
 from cctv_summary.video import VideoError
+
+
+def _write_textured_clip(path, *, frames: int, level: int = 110) -> None:
+    """Write a clip with real structure in it.
+
+    `sample_video` is a flat colour field, which `check` correctly calls an
+    obstructed lens, so anything testing healthy footage needs its own.
+    """
+    width, height = 160, 120
+    rng = np.random.default_rng(5)
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (width, height)
+    )
+    if not writer.isOpened():
+        pytest.skip("No MJPG encoder available.")
+    try:
+        for _ in range(frames):
+            frame = np.full((height, width, 3), level, np.uint8)
+            frame[: height // 3] = max(level - 30, 0)
+            cv2.rectangle(frame, (20, 40), (70, 100), (min(level + 50, 255),) * 3, -1)
+            for x in range(0, width, 12):
+                cv2.line(frame, (x, 90), (x, height), (max(level - 20, 0),) * 3, 1)
+            noisy = np.clip(frame + rng.normal(0, 3, frame.shape), 0, 255)
+            writer.write(noisy.astype(np.uint8))
+    finally:
+        writer.release()
 
 
 def test_version_is_exposed():
@@ -120,6 +148,86 @@ def test_play_surfaces_video_errors(monkeypatch, capsys, tmp_path):
 
     assert main(["play", str(tmp_path / "clip.avi")]) == 1
     assert "error: boom" in capsys.readouterr().err
+
+
+def test_check_passes_a_healthy_clip(tmp_path, capsys):
+    clip = tmp_path / "healthy.avi"
+    _write_textured_clip(clip, frames=40)
+
+    assert main(["check", str(clip)]) == 0
+
+    out = capsys.readouterr().out
+    assert "faults:   0" in out
+    assert "no camera faults found" in out
+
+
+def test_check_exits_non_zero_when_a_fault_is_found(tmp_path, capsys):
+    clip = tmp_path / "dark.avi"
+    _write_textured_clip(clip, frames=40, level=4)
+
+    assert main(["check", str(clip)]) == 1
+
+    out = capsys.readouterr().out
+    assert "dark" in out
+    assert "affected:" in out
+
+
+def test_check_lists_faults_with_timestamps(tmp_path, capsys):
+    clip = tmp_path / "dark.avi"
+    _write_textured_clip(clip, frames=40, level=4)
+
+    main(["check", str(clip)])
+
+    assert "00:00:" in capsys.readouterr().out
+
+
+def test_check_reports_typical_readings(tmp_path, capsys):
+    clip = tmp_path / "healthy.avi"
+    _write_textured_clip(clip, frames=20)
+
+    main(["check", str(clip)])
+
+    assert "typical:" in capsys.readouterr().out
+
+
+def test_check_surfaces_video_errors(tmp_path, capsys):
+    assert main(["check", str(tmp_path / "nope.avi")]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_check_surfaces_bad_thresholds(tmp_path, capsys):
+    clip = tmp_path / "clip.avi"
+    _write_textured_clip(clip, frames=5)
+
+    assert main(["check", str(clip), "--obstruction", "2"]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_check_thresholds_are_adjustable(tmp_path, capsys):
+    clip = tmp_path / "clip.avi"
+    _write_textured_clip(clip, frames=40)
+
+    assert main(["check", str(clip)]) == 0
+    # A threshold above the clip's own brightness must find it too dark.
+    assert main(["check", str(clip), "--dark", "250"]) == 1
+
+
+def test_check_keeps_progress_off_stdout(tmp_path, capsys):
+    clip = tmp_path / "clip.avi"
+    _write_textured_clip(clip, frames=20)
+
+    main(["check", str(clip)])
+
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    assert "checking" not in out
+
+
+def test_check_defaults_are_exposed():
+    args = build_parser().parse_args(["check", "clip.avi"])
+
+    assert args.dark == DEFAULT_DARK_LUMINANCE
+    assert args.comparison_edge is None
 
 
 def test_summarize_requires_a_destination(sample_video, capsys):
